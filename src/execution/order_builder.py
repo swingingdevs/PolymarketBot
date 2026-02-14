@@ -9,6 +9,7 @@ from urllib.parse import urlencode
 from urllib.request import urlopen
 
 import structlog
+from py_clob_client.clob_types import OrderArgs
 
 from metrics import BOT_FEE_FETCH_FAILURES_TOTAL, BOT_FEE_RATE_BPS
 
@@ -100,39 +101,12 @@ class OrderBuilder:
             "size": size,
             "side": side,
             "token_id": token_id,
-            "time_in_force": normalized_tif,
-            "post_only": bool(post_only),
-            "feeRateBps": int(round(fee_rate_bps)),
+            "fee_rate_bps": int(round(fee_rate_bps)),
         }
+        del time_in_force
 
-        if hasattr(self.clob_client, "create_limit_order"):
-            payload_variants = []
-            for fee_key in ("feeRateBps", "fee_rate_bps"):
-                for tif_key in ("time_in_force", "timeInForce"):
-                    for post_key in ("post_only", "postOnly"):
-                        payload = {
-                            "price": base_payload["price"],
-                            "size": base_payload["size"],
-                            "side": base_payload["side"],
-                            "token_id": base_payload["token_id"],
-                            fee_key: base_payload["feeRateBps"],
-                            tif_key: base_payload["time_in_force"],
-                            post_key: base_payload["post_only"],
-                        }
-                        payload_variants.append(payload)
-
-            last_exc: Exception | None = None
-            order = None
-            for payload in payload_variants:
-                try:
-                    order = self.clob_client.create_limit_order(**payload)
-                    break
-                except TypeError as exc:
-                    last_exc = exc
-            if order is None:
-                if last_exc is None:
-                    raise RuntimeError("limit_order_build_failed")
-                raise last_exc
+        if hasattr(self.clob_client, "create_order"):
+            order = self.clob_client.create_order(OrderArgs(**payload))
         else:
             raise RuntimeError("unsupported_order_submission_api")
 
