@@ -197,6 +197,7 @@ def test_buy_fok_uses_ask_when_already_on_tick(monkeypatch: pytest.MonkeyPatch, 
     settings = Settings(dry_run=False, risk_state_path=str(tmp_path / "risk_state.json"), quote_size_usd=10)
     trader = Trader(settings)
     trader.client = _CaptureClient()
+    trader._live_auth_ready = True
     monkeypatch.setattr("execution.trader.OrderArgs", _CaptureOrderArgs)
 
     async def _run() -> None:
@@ -212,6 +213,7 @@ def test_buy_fok_rounds_up_off_tick_and_never_below_ask(monkeypatch: pytest.Monk
     settings = Settings(dry_run=False, risk_state_path=str(tmp_path / "risk_state.json"), quote_size_usd=10)
     trader = Trader(settings)
     trader.client = _CaptureClient()
+    trader._live_auth_ready = True
     monkeypatch.setattr("execution.trader.OrderArgs", _CaptureOrderArgs)
 
     asks = [0.5012, 0.50001, 0.9990004]
@@ -228,3 +230,38 @@ def test_buy_fok_rounds_up_off_tick_and_never_below_ask(monkeypatch: pytest.Monk
     assert submitted_prices[0] == 0.502
     for ask, submitted in zip(asks, submitted_prices):
         assert submitted >= ask
+
+
+def test_buy_fok_best_ask_0983_with_tick_0001_never_submits_0982(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.setattr(Settings, "settings_profile", "paper", raising=False)
+    settings = Settings(dry_run=False, risk_state_path=str(tmp_path / "risk_state.json"), quote_size_usd=10)
+    trader = Trader(settings)
+    trader.client = _CaptureClient()
+    trader._live_auth_ready = True
+    monkeypatch.setattr("execution.trader.OrderArgs", _CaptureOrderArgs)
+    trader.update_token_constraints("token-a", tick_size=0.001)
+
+    async def _run() -> None:
+        assert await trader.buy_fok("token-a", ask=0.983, horizon="5") is True
+
+    asyncio.run(_run())
+    assert trader.client.args is not None
+    assert trader.client.args.price == 0.983
+    assert trader.client.args.price != 0.982
+
+
+def test_buy_fok_honors_non_default_tick_size(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.setattr(Settings, "settings_profile", "paper", raising=False)
+    settings = Settings(dry_run=False, risk_state_path=str(tmp_path / "risk_state.json"), quote_size_usd=10)
+    trader = Trader(settings)
+    trader.client = _CaptureClient()
+    trader._live_auth_ready = True
+    monkeypatch.setattr("execution.trader.OrderArgs", _CaptureOrderArgs)
+    trader.update_token_constraints("token-a", tick_size=0.005)
+
+    async def _run() -> None:
+        assert await trader.buy_fok("token-a", ask=0.983, horizon="5") is True
+
+    asyncio.run(_run())
+    assert trader.client.args is not None
+    assert trader.client.args.price == 0.985
