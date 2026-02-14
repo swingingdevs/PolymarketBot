@@ -1,0 +1,13 @@
+{
+  "event_type": "book_update",
+  "asset_id": "token-a",
+  "changes": {
+    "asset_id": "token-a",
+    "best_bid": "0.46",
+    "best_bid_size": "10",
+    "best_ask": "0.47",
+    "best_ask_size": "11",
+    "timestamp": 1712345679000
+  },
+  "timestamp": 1712345678000
+}
