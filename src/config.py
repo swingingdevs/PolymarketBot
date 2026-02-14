@@ -37,6 +37,12 @@ PROFILE_DEFAULTS: dict[str, dict[str, float | int]] = {
     },
 }
 
+JURISDICTION_BANNED_CATEGORIES: dict[str, tuple[str, ...]] = {
+    "default": tuple(),
+    "us": ("sports",),
+    "us-nj": ("sports",),
+}
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
@@ -184,6 +190,9 @@ class Settings(BaseSettings):
     recorder_output_path: str = "artifacts/session_recording.jsonl"
     recorder_queue_maxsize: int = 10000
     geoblock_abort: bool = True
+    jurisdiction_override: str = ""
+    deployment_jurisdiction_override: str = ""
+    account_jurisdiction_override: str = ""
 
     @model_validator(mode="after")
     def apply_profile_defaults(self) -> "Settings":

@@ -21,6 +21,7 @@ class UpDownMarket:
     up_token_id: str
     down_token_id: str
     horizon_minutes: int
+    category: str = "event"
     token_metadata_by_id: dict[str, TokenMetadata] = field(default_factory=dict)
 
 
@@ -96,6 +97,52 @@ class GammaCache:
         if "btc" not in question + desc or "usd" not in question + desc:
             raise ValueError("underlying is not BTC/USD")
 
+
+    @staticmethod
+    def classify_market_category(row: dict[str, object]) -> str:
+        sports_keywords = (
+            "sport",
+            "nba",
+            "nfl",
+            "mlb",
+            "nhl",
+            "soccer",
+            "football",
+            "baseball",
+            "basketball",
+            "tennis",
+            "golf",
+            "ufc",
+            "mma",
+            "f1",
+            "formula 1",
+        )
+
+        searchable: list[str] = []
+        for key in ("category", "question", "description", "eventType", "event_type"):
+            value = row.get(key)
+            if value is not None:
+                searchable.append(str(value).lower())
+
+        tags = row.get("tags")
+        if isinstance(tags, list):
+            for tag in tags:
+                if isinstance(tag, dict):
+                    searchable.append(str(tag.get("label") or tag.get("name") or "").lower())
+                else:
+                    searchable.append(str(tag).lower())
+
+        combined = " ".join(searchable)
+        if any(keyword in combined for keyword in sports_keywords):
+            return "sports"
+        return "event"
+
+    @staticmethod
+    def filter_markets_by_banned_categories(markets: list[UpDownMarket], banned_categories: set[str]) -> list[UpDownMarket]:
+        if not banned_categories:
+            return markets
+        normalized = {c.strip().lower() for c in banned_categories if c.strip()}
+        return [m for m in markets if m.category.strip().lower() not in normalized]
 
     @staticmethod
     def _extract_float(value: object) -> float | None:
@@ -214,6 +261,7 @@ class GammaCache:
             up_token_id=up,
             down_token_id=down,
             horizon_minutes=horizon_minutes,
+            category=self.classify_market_category(row),
             token_metadata_by_id=token_metadata,
         )
         self._cache[slug] = (market, market.end_epoch)

@@ -7,9 +7,9 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 
 import structlog
 
-from config import Settings
+from config import JURISDICTION_BANNED_CATEGORIES, Settings
 from execution.trader import Trader
-from geo import check_geoblock
+from geo import check_geoblock, resolve_jurisdiction_key
 from feeds.chainlink_direct import SpotLivenessFallbackFeed
 from feeds.clob_ws import BookTop, CLOBWebSocket
 from feeds.coinbase_ws import CoinbaseSpotFeed
@@ -39,8 +39,14 @@ from strategy.state_machine import StrategyStateMachine
 
 logger = structlog.get_logger(__name__)
 
-async def run_startup_geoblock_preflight(settings: Settings) -> bool:
+async def run_startup_geoblock_preflight(settings: Settings) -> tuple[bool, str, str, str]:
     blocked, country, region = await check_geoblock()
+    jurisdiction_key = resolve_jurisdiction_key(
+        country=country,
+        region=region,
+        deployment_override=settings.deployment_jurisdiction_override or settings.jurisdiction_override,
+        account_override=settings.account_jurisdiction_override,
+    )
     if blocked:
         logger.critical(
             "geoblock_blocked_startup",
@@ -51,10 +57,16 @@ async def run_startup_geoblock_preflight(settings: Settings) -> bool:
         )
         if settings.geoblock_abort:
             raise SystemExit(2)
-        return False
+        return False, country, region, jurisdiction_key
 
-    logger.info("geoblock_preflight_ok", country=country, region=region, trading_allowed=True)
-    return True
+    logger.info(
+        "geoblock_preflight_ok",
+        country=country,
+        region=region,
+        jurisdiction_key=jurisdiction_key,
+        trading_allowed=True,
+    )
+    return True, country, region, jurisdiction_key
 
 def update_api_credential_age_metric(created_at: float | None) -> None:
     if created_at is None:
@@ -193,7 +205,9 @@ async def orchestrate() -> None:
     settings = Settings()
     configure_logging()
     start_metrics_server(settings.metrics_host, settings.metrics_port)
-    geoblock_trading_allowed = await run_startup_geoblock_preflight(settings)
+    geoblock_trading_allowed, _country, _region, jurisdiction_key = await run_startup_geoblock_preflight(settings)
+    banned_categories = set(JURISDICTION_BANNED_CATEGORIES.get("default", tuple()))
+    banned_categories.update(JURISDICTION_BANNED_CATEGORIES.get(jurisdiction_key, tuple()))
 
     gamma = GammaCache(str(settings.gamma_api_url))
     rtds = RTDSFeed(
@@ -294,8 +308,14 @@ async def orchestrate() -> None:
             gamma.get_market(5, n5),
             gamma.get_market(15, n15),
         )
-        active_markets = [current_5m, current_15m]
-        subscribed_markets = [current_5m, current_15m, next_5m, next_15m]
+        active_markets = GammaCache.filter_markets_by_banned_categories(
+            [current_5m, current_15m],
+            banned_categories,
+        )
+        subscribed_markets = GammaCache.filter_markets_by_banned_categories(
+            [current_5m, current_15m, next_5m, next_15m],
+            banned_categories,
+        )
         market_state = {m.slug: m for m in active_markets}
 
         metadata_updates = {}
@@ -314,6 +334,9 @@ async def orchestrate() -> None:
             )
         if metadata_updates:
             token_metadata_cache.put_many(metadata_updates)
+
+        if not active_markets:
+            logger.warning("no_active_markets_after_policy_filter", jurisdiction_key=jurisdiction_key)
 
         if new_token_ids != token_ids:
             added_tokens = sorted(new_token_ids - token_ids)

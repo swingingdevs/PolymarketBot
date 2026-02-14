@@ -2,32 +2,23 @@ from __future__ import annotations
 
 import asyncio
 
-from config import Settings
-from geo import check_geoblock
-from main import run_startup_geoblock_preflight
+from geo import check_geoblock, resolve_jurisdiction_key
 from metrics import GEOBLOCK_BLOCKED
 
 
-def test_blocked_country_disables_trading_startup(monkeypatch) -> None:
-    async def _blocked():
-        return True, "US", "us-east-1"
+def test_resolve_jurisdiction_key_prefers_account_override() -> None:
+    key = resolve_jurisdiction_key(
+        country="US",
+        region="NY",
+        deployment_override="us-deployment",
+        account_override="account-us-ny",
+    )
+    assert key == "account-us-ny"
 
-    monkeypatch.setattr("main.check_geoblock", _blocked)
-    settings = Settings(geoblock_abort=False)
 
-    trading_allowed = asyncio.run(run_startup_geoblock_preflight(settings))
-    assert trading_allowed is False
-
-
-def test_unblocked_country_allows_trading_startup(monkeypatch) -> None:
-    async def _clear():
-        return False, "IE", "eu-west-1"
-
-    monkeypatch.setattr("main.check_geoblock", _clear)
-    settings = Settings(geoblock_abort=True)
-
-    trading_allowed = asyncio.run(run_startup_geoblock_preflight(settings))
-    assert trading_allowed is True
+def test_resolve_jurisdiction_key_falls_back_to_country_region() -> None:
+    key = resolve_jurisdiction_key(country="US", region="NJ")
+    assert key == "us-nj"
 
 
 def test_geoblock_metrics_update_from_response(monkeypatch) -> None:

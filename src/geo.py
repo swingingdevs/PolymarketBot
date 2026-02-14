@@ -37,3 +37,26 @@ async def check_geoblock(timeout_seconds: float = 5.0) -> tuple[bool, str, str]:
 
     GEOBLOCK_BLOCKED.labels(country=country, region=region).set(1 if blocked else 0)
     return blocked, country, region
+
+
+def resolve_jurisdiction_key(
+    *,
+    country: str,
+    region: str,
+    deployment_override: str = "",
+    account_override: str = "",
+) -> str:
+    """Resolve normalized jurisdiction key from geoblock data and optional overrides."""
+    if account_override.strip():
+        return account_override.strip().lower()
+    if deployment_override.strip():
+        return deployment_override.strip().lower()
+
+    normalized_country = (country or "unknown").strip().lower()
+    normalized_region = (region or "").strip().lower()
+
+    if normalized_country == "unknown":
+        return "default"
+    if normalized_region and normalized_region != "unknown":
+        return f"{normalized_country}-{normalized_region}"
+    return normalized_country
