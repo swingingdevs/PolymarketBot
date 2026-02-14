@@ -202,6 +202,8 @@ async def orchestrate() -> None:
         watch_zscore_threshold=settings.watch_zscore_threshold,
         price_stale_after_seconds=settings.price_stale_after_seconds,
         watch_mode_expiry_seconds=settings.watch_mode_expiry_seconds,
+        enable_fee_rate=settings.enable_fee_rate,
+        default_fee_rate_bps=settings.default_fee_rate_bps,
     )
 
     recorder = EventRecorder(

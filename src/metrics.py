@@ -53,6 +53,11 @@ ORACLE_SPOT_DIVERGENCE_PCT = Gauge(
 )
 FEED_LAG_SECONDS = Gauge("feed_lag_seconds", "Current feed lag in seconds", ["feed"])
 FEED_BLOCKED_STALE_PRICE = Gauge("feed_blocked_stale_price", "1 if stale price feed is currently blocking trading")
+BOT_FEE_RATE_BPS = Gauge("bot_fee_rate_bps", "Latest fetched fee rate in bps by token", ["token_id"])
+BOT_FEE_FETCH_FAILURES_TOTAL = Counter(
+    "bot_fee_fetch_failures_total",
+    "Number of failures while fetching dynamic fee rates",
+)
 
 
 def start_metrics_server(host: str, port: int) -> None:

@@ -128,7 +128,9 @@ class Settings(BaseSettings):
     metrics_host: str = "0.0.0.0"
     metrics_port: int = 9102
     token_metadata_ttl_seconds: float = 300.0
-    fee_rate_ttl_seconds: float = 300.0
+    fee_rate_ttl_seconds: float = 60.0
+    enable_fee_rate: bool = True
+    default_fee_rate_bps: float = 12.0
     recorder_enabled: bool = False
     recorder_output_path: str = "artifacts/session_recording.jsonl"
     recorder_queue_maxsize: int = 10000
@@ -177,5 +179,7 @@ class Settings(BaseSettings):
             raise ValueError("Unsafe configuration: spot_quorum_min_sources must be >= 2")
         if self.fee_rate_ttl_seconds <= 0:
             raise ValueError("Unsafe configuration: fee_rate_ttl_seconds must be > 0")
+        if self.default_fee_rate_bps < 0:
+            raise ValueError("Unsafe configuration: default_fee_rate_bps must be >= 0")
 
         return self
