@@ -66,10 +66,11 @@ class StrategyStateMachine:
         self.curr_minute_start: int | None = None
         self.minute_open: float | None = None
         self.watch_mode = False
+        self.watch_mode_started_at: int | None = None
 
         self.start_prices: dict[int, float] = {}
         self.start_price_metadata: dict[int, dict[str, object]] = {}
-        self.prices_1s: deque[tuple[int, float]] = deque(maxlen=120)
+        self.prices_1s: deque[tuple[int, float]] = deque(maxlen=max(120, self.rolling_window_seconds * 2))
         self.books: dict[str, BookSnapshot] = {}
         self.fill_stats: dict[str, FillProbStats] = {}
 
@@ -140,6 +141,10 @@ class StrategyStateMachine:
 
         sec = int(ts)
         self.prices_1s.append((sec, price))
+        cutoff = sec - self.rolling_window_seconds
+        while self.prices_1s and self.prices_1s[0][0] < cutoff:
+            self.prices_1s.popleft()
+
         self.last_price = price
 
         if sec % 300 == 0:
@@ -157,18 +162,33 @@ class StrategyStateMachine:
                 "source": metadata.get("source", "unknown"),
             }
 
-        minute = sec - (sec % 60)
-        if self.curr_minute_start is None:
-            self.curr_minute_start = minute
-            self.minute_open = price
+        if self.watch_mode and self.watch_mode_started_at is not None:
+            if sec - self.watch_mode_started_at >= self.watch_mode_expiry_seconds:
+                self._set_watch_mode(False, sec)
+                self.prices_1s = deque([(sec, price)], maxlen=max(120, self.rolling_window_seconds * 2))
+                return
+
+        if len(self.prices_1s) < 2:
             return
-        if minute > self.curr_minute_start and self.minute_open is not None:
-            ret = (price / self.minute_open) - 1
-            self.watch_mode = abs(ret) >= self.threshold
-            if self.watch_mode:
-                WATCH_EVENTS.inc()
-            self.curr_minute_start = minute
-            self.minute_open = price
+
+        first_price = self.prices_1s[0][1]
+        rolling_abs_ret = abs((price / first_price) - 1) if first_price > 0 else 0.0
+        trigger_by_return = rolling_abs_ret >= self.threshold
+
+        trigger_by_zscore = False
+        if self.watch_zscore_threshold > 0:
+            rets = self._rolling_returns()
+            if len(rets) >= 2:
+                mean = sum(rets) / len(rets)
+                var = sum((x - mean) ** 2 for x in rets) / max(1, len(rets) - 1)
+                stddev = math.sqrt(var)
+                if stddev > 0:
+                    latest_ret = rets[-1]
+                    z_score = abs((latest_ret - mean) / stddev)
+                    trigger_by_zscore = z_score >= self.watch_zscore_threshold
+
+        if trigger_by_return or trigger_by_zscore:
+            self._set_watch_mode(True, sec)
 
     def in_hammer_window(self, now_ts: int, end_epoch: int) -> bool:
         return 0 <= (end_epoch - now_ts) <= self.hammer_secs

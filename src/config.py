@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     use_fallback_feed: bool = True
 
     watch_return_threshold: float = 0.005
+    watch_rolling_window_seconds: int = 60
+    watch_zscore_threshold: float = 0.0
+    watch_mode_expiry_seconds: int = 60
     hammer_secs: int = 15
     d_min: float = 5.0
     max_entry_price: float = 0.97
