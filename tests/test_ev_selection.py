@@ -70,6 +70,31 @@ def test_slippage_penalty_can_change_candidate_ranking() -> None:
     assert best.slippage_cost > 0
 
 
+def test_depth_penalty_scales_with_displayed_size_shortfall() -> None:
+    sm = StrategyStateMachine(
+        0.005,
+        hammer_secs=15,
+        d_min=1.0,
+        max_entry_price=0.99,
+        fee_bps=0,
+        expected_notional_usd=20.0,
+        depth_penalty_coeff=2.0,
+    )
+
+    t0 = 1_710_000_000
+    _seed_state(sm, t0)
+    m5 = UpDownMarket("m5", t0 - 285, t0 + 15, "u5", "d5", 5)
+
+    # Same spread in both cases, but lower displayed size should incur a bigger depth penalty.
+    high_depth = sm._candidate_ev(m5, "UP", ask=0.40, bid=0.35, ask_size=60.0, fill_prob=1.0)
+    low_depth = sm._candidate_ev(m5, "UP", ask=0.40, bid=0.35, ask_size=5.0, fill_prob=1.0)
+
+    assert high_depth is not None
+    assert low_depth is not None
+    assert low_depth.slippage_cost > high_depth.slippage_cost
+    assert low_depth.ev_exec < high_depth.ev_exec
+
+
 def test_candidate_ev_uses_token_fee_rate_with_global_fallback() -> None:
     cache = TokenMetadataCache(ttl_seconds=300)
     cache.put("u5", TokenMetadata(tick_size=0.01, fee_rate_bps=25))

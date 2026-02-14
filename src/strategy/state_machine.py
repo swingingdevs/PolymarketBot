@@ -52,6 +52,8 @@ class StrategyStateMachine:
         d_min: float,
         max_entry_price: float,
         fee_bps: float,
+        expected_notional_usd: float = 20.0,
+        depth_penalty_coeff: float = 1.0,
         probability_calibrator: ProbabilityCalibrator | None = None,
         calibration_input: CalibrationInput = "p_hat",
         token_metadata_cache: TokenMetadataCache | None = None,
@@ -64,6 +66,8 @@ class StrategyStateMachine:
         self.d_min = d_min
         self.max_entry_price = max_entry_price
         self.fee_bps = fee_bps
+        self.expected_notional_usd = max(0.0, expected_notional_usd)
+        self.depth_penalty_coeff = max(0.0, depth_penalty_coeff)
         self.probability_calibrator = probability_calibrator or IdentityCalibrator()
         self.calibration_input = calibration_input
         self.token_metadata_cache = token_metadata_cache
@@ -259,6 +263,7 @@ class StrategyStateMachine:
         ask_size: float | None = None,
         fill_prob: float | None = None,
         token_id: str | None = None,
+        expected_size: float | None = None,
     ) -> Candidate | None:
         curr = self.last_price
         if curr is None or ask <= 0:
@@ -298,9 +303,12 @@ class StrategyStateMachine:
         fee_cost = fee_bps / 10000.0
         spread = max(0.0, ask - bid) if bid is not None else 0.0
         spread_penalty = 0.5 * spread
+        desired_size = expected_size if expected_size is not None else (self.expected_notional_usd / ask)
+        desired_size = max(0.0, desired_size)
         depth_penalty = 0.0
-        if ask_size is not None and ask_size > 0:
-            depth_penalty = max(0.0, 1.0 - ask_size) * spread
+        if ask_size is not None:
+            shortfall = max(0.0, desired_size - ask_size) / max(desired_size, 1e-9)
+            depth_penalty = shortfall * spread * self.depth_penalty_coeff
         slippage_cost = spread_penalty + depth_penalty
 
         effective_fill_prob = 1.0 if fill_prob is None else min(1.0, max(0.0, fill_prob))
