@@ -23,13 +23,13 @@ Production-ready Python 3.11 trading bot for Polymarket BTC Up/Down 5m and 15m c
 ## Price Feed Details
 
 This bot **must** use the Chainlink Data Streams aggregated BTC/USD reference feed for decisioning.
-Polymarket market resolution is based on Chainlink aggregated reference prices, not Binance spot prints.
+Polymarket market resolution is based on Chainlink aggregated reference prices, not spot exchange prints.
 
-- ✅ Correct feed: `crypto_prices_chainlink` topic with `BTC/USD` symbol.
-- ❌ Incorrect feed: Binance-only spot prices (e.g., `BTCUSDT`) for resolution logic.
+- ✅ Canonical decision feed: `crypto_prices_chainlink` topic with `BTC/USD` symbol.
+- ⚠️ Spot liveness fallback feed: public spot ticker (`chainlink_direct_api_url`) used only to keep runtime alive during RTDS stalls.
+- ❌ Incorrect approach: treating spot fallback prints as canonical resolution truth.
 
-> **Warning:** Using the wrong price feed can systematically misprice outcomes and cause persistent losses,
-> even if all other strategy logic is correct.
+> **Warning:** Spot fallback mode is a liveness-only degradation path. It can diverge from canonical resolution data and should be treated as reduced-confidence trading conditions.
 
 ## Repo layout
 
@@ -139,6 +139,21 @@ Startup is rejected for unsafe parameter combos, including:
 
 - Keep `DRY_RUN=true` until all connectivity and pricing checks are validated.
 - For live orders, set credentials and ensure py-clob-client account setup is complete.
+
+## RTDS outage runbook (fallback behavior)
+
+Expected behavior when RTDS degrades or disconnects:
+
+1. Bot detects stale RTDS updates after `price_staleness_threshold`.
+2. If `USE_FALLBACK_FEED=true`, it enters **spot liveness fallback mode** and emits warning logs with `reduced_trading_confidence=true`.
+3. By default, order placement is gated while fallback is active (`ALLOW_ORDERS_WHILE_FALLBACK_ACTIVE=false`).
+4. RTDS recovery automatically returns the bot to canonical feed mode.
+
+Operational limits for fallback mode:
+
+- Fallback pricing is **not** a canonical resolution feed and may diverge from Chainlink reference prices.
+- Use fallback only for continuity and observability during outages; do not treat it as normal trading conditions.
+- If you intentionally allow trading during fallback, set `ALLOW_ORDERS_WHILE_FALLBACK_ACTIVE=true` and monitor divergence closely.
 
 ## Runtime smoke script (paper mode)
 

@@ -77,6 +77,7 @@ class Settings(BaseSettings):
     clob_book_depth_levels: int = 10
     chainlink_direct_api_url: str = "https://api.exchange.coinbase.com/products/BTC-USD/ticker"
     use_fallback_feed: bool = False
+    allow_orders_while_fallback_active: bool = False
 
     settings_profile: Literal["paper", "live", "high_vol", "low_vol"] = "paper"
     watch_return_threshold: float = 0.005
