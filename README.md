@@ -71,7 +71,7 @@ pytest
 6. Start bot:
 
 ```bash
-python -m main
+PYTHONPATH=src python -m main
 ```
 
 ## Example `.env`
@@ -112,7 +112,7 @@ METRICS_PORT=9102
 Use the replay/sweep utility to evaluate strategy parameters on historical data while reusing `StrategyStateMachine` logic.
 
 ```bash
-python -m strategy.parameter_eval   --replay-csv data/replay.csv   --markets-json data/markets.json   --grid-json '{"watch_return_threshold":[0.003,0.005],"hammer_secs":[10,15,20],"d_min":[3,5],"max_entry_price":[0.9,0.95],"fee_bps":[8,10]}'   --output-prefix reports/calibration/latest
+PYTHONPATH=src python -m strategy.parameter_eval   --replay-csv data/replay.csv   --markets-json data/markets.json   --grid-json '{"watch_return_threshold":[0.003,0.005],"hammer_secs":[10,15,20],"d_min":[3,5],"max_entry_price":[0.9,0.95],"fee_bps":[8,10]}'   --output-prefix reports/calibration/latest
 ```
 
 The utility exports:
