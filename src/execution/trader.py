@@ -817,6 +817,47 @@ class Trader:
             current.tick_size = float(tick_size)
         self.token_constraints_by_id[token_id] = current
 
+    def _resolve_order_submission_controls(self) -> tuple[str, bool]:
+        raw_tif = str(getattr(self.settings, "order_time_in_force", "") or "").strip().upper()
+        tif = raw_tif or ("FOK" if bool(getattr(self.settings, "order_fok", True)) else "GTC")
+        if tif not in {"FOK", "GTC", "IOC", "GTD"}:
+            raise ValueError(f"unsupported_time_in_force:{tif}")
+        return tif, bool(getattr(self.settings, "order_post_only", False))
+
+    @staticmethod
+    def _collect_rejection_text(payload: Any) -> str:
+        if payload is None:
+            return ""
+        if isinstance(payload, BaseException):
+            return str(payload).lower()
+        if isinstance(payload, str):
+            return payload.lower()
+        if isinstance(payload, dict):
+            parts: list[str] = []
+            for key in ("status", "error", "reason", "message", "error_msg", "errorMessage"):
+                value = payload.get(key)
+                if value:
+                    parts.append(str(value))
+            return " ".join(parts).lower()
+        return str(payload).lower()
+
+    @classmethod
+    def _classify_expected_rejection(cls, payload: Any, *, time_in_force: str, post_only: bool) -> str | None:
+        text = cls._collect_rejection_text(payload)
+        post_only_cross = ("post-only" in text or "post only" in text or "post_only" in text) and any(
+            token in text for token in ("cross", "would match", "would execute", "would take")
+        )
+        if post_only and post_only_cross:
+            return "post_only_cross"
+
+        fok_unfilled = ("fok" in text or time_in_force == "FOK") and any(
+            token in text for token in ("unfilled", "not filled", "no fill", "did not fill")
+        )
+        if time_in_force == "FOK" and fok_unfilled:
+            return "fok_unfilled"
+
+        return None
+
     def _submit_live_fok_order(self, token_id: str, px: float, size: float) -> Any:
         if self.client is None:
             raise RuntimeError("missing_clob_client")
@@ -828,7 +869,9 @@ class Trader:
                 price=px,
                 size=size,
                 side="BUY",
-                time_in_force="FOK",
+                time_in_force=time_in_force,
+                post_only=post_only,
+                fok=(time_in_force == "FOK"),
             )
             if used_fallback and bool(getattr(self.settings, "enable_fee_rate", True)):
                 raise RuntimeError("fee_rate_unavailable_monitor_only")
@@ -1046,6 +1089,26 @@ class Trader:
             TRADES.labels(status="timeout", side="buy", horizon=horizon).inc()
             return False
         except Exception as exc:
+            time_in_force, post_only = self._resolve_order_submission_controls()
+            expected_rejection = self._classify_expected_rejection(
+                exc,
+                time_in_force=time_in_force,
+                post_only=post_only,
+            )
+            if expected_rejection is not None:
+                event = "order_submit_rejected_post_only_cross" if expected_rejection == "post_only_cross" else "order_submit_rejected_fok_unfilled"
+                logger.info(
+                    event,
+                    token_id=token_id,
+                    ask=px,
+                    size=size,
+                    time_in_force=time_in_force,
+                    post_only=post_only,
+                    error=str(exc),
+                )
+                TRADES.labels(status=f"rejected_{expected_rejection}", side="buy", horizon=horizon).inc()
+                return False
+
             failure_type = self._classify_submit_exception(exc)
             event = "order_submit_failed"
             if failure_type == "auth":
@@ -1061,6 +1124,26 @@ class Trader:
                 error=str(exc),
             )
             TRADES.labels(status=failure_type, side="buy", horizon=horizon).inc()
+            return False
+
+        time_in_force, post_only = self._resolve_order_submission_controls()
+        expected_rejection = self._classify_expected_rejection(
+            resp,
+            time_in_force=time_in_force,
+            post_only=post_only,
+        )
+        if expected_rejection is not None:
+            event = "order_submit_rejected_post_only_cross" if expected_rejection == "post_only_cross" else "order_submit_rejected_fok_unfilled"
+            logger.info(
+                event,
+                token_id=token_id,
+                ask=px,
+                size=size,
+                response=resp,
+                time_in_force=time_in_force,
+                post_only=post_only,
+            )
+            TRADES.labels(status=f"rejected_{expected_rejection}", side="buy", horizon=horizon).inc()
             return False
 
         ok = bool(resp)

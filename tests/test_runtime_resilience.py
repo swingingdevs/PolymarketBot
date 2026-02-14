@@ -175,9 +175,10 @@ def test_market_epoch_roll_triggers_clob_resubscribe() -> None:
 
 
 class _CaptureClient:
-    def __init__(self) -> None:
+    def __init__(self, response: dict[str, object] | None = None) -> None:
         self.limit_order_args: dict[str, object] | None = None
         self.posted_order: dict[str, object] | None = None
+        self.response = response or {"fills": [{"price": 0.0, "size": 1.0}]}
 
     def create_order(self, order_args):
         self.limit_order_args = dict(order_args.__dict__)
@@ -206,7 +207,7 @@ def test_buy_fok_uses_limit_order_api(monkeypatch: pytest.MonkeyPatch, tmp_path)
     assert trader.client.posted_order["orderType"] == "FOK"
 
 
-def test_buy_fok_limit_order_requests_fok_for_every_submit(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+def test_buy_fok_limit_order_requests_configured_tif_for_every_submit(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setattr(Settings, "settings_profile", "paper", raising=False)
     settings = Settings(dry_run=False, risk_state_path=str(tmp_path / "risk_state.json"), quote_size_usd=10, enable_fee_rate=False)
     trader = Trader(settings)
@@ -223,7 +224,7 @@ def test_buy_fok_limit_order_requests_fok_for_every_submit(monkeypatch: pytest.M
             submitted_tifs.append(str(trader.client.posted_order["orderType"]))
 
     asyncio.run(_run())
-    assert submitted_tifs == ["FOK", "FOK", "FOK"]
+    assert submitted_tifs == ["GTC", "GTC", "GTC"]
 
 
 def test_buy_fok_best_ask_0983_with_tick_0001_never_submits_0982(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
@@ -256,3 +257,64 @@ def test_buy_fok_honors_non_default_tick_size(monkeypatch: pytest.MonkeyPatch, t
     asyncio.run(_run())
     assert trader.client.limit_order_args is not None
     assert trader.client.posted_order is not None
+
+
+class _CaptureMetric:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, str]] = []
+
+    def labels(self, **labels):
+        self.calls.append(labels)
+        return self
+
+    def inc(self):
+        return None
+
+
+def test_buy_fok_classifies_post_only_cross_rejection(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.setattr(Settings, "settings_profile", "paper", raising=False)
+    settings = Settings(
+        dry_run=False,
+        risk_state_path=str(tmp_path / "risk_state.json"),
+        quote_size_usd=10,
+        order_post_only=True,
+        order_fok=False,
+        enable_fee_rate=False,
+    )
+    trader = Trader(settings)
+    trader.client = _CaptureClient(response={"status": "rejected", "error": "post-only order would cross"})
+    trader._live_auth_ready = True
+
+    metric = _CaptureMetric()
+    monkeypatch.setattr("execution.trader.TRADES", metric)
+
+    events: list[str] = []
+    monkeypatch.setattr("execution.trader.logger.info", lambda event, **_kwargs: events.append(event))
+
+    async def _run() -> None:
+        assert await trader.buy_fok("token-a", ask=0.501, horizon="5") is False
+
+    asyncio.run(_run())
+    assert "order_submit_rejected_post_only_cross" in events
+    assert any(call.get("status") == "rejected_post_only_cross" for call in metric.calls)
+
+
+def test_buy_fok_classifies_fok_unfilled_rejection(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.setattr(Settings, "settings_profile", "paper", raising=False)
+    settings = Settings(dry_run=False, risk_state_path=str(tmp_path / "risk_state.json"), quote_size_usd=10, enable_fee_rate=False)
+    trader = Trader(settings)
+    trader.client = _CaptureClient(response={"status": "rejected", "message": "FOK order not filled"})
+    trader._live_auth_ready = True
+
+    metric = _CaptureMetric()
+    monkeypatch.setattr("execution.trader.TRADES", metric)
+
+    events: list[str] = []
+    monkeypatch.setattr("execution.trader.logger.info", lambda event, **_kwargs: events.append(event))
+
+    async def _run() -> None:
+        assert await trader.buy_fok("token-a", ask=0.501, horizon="5") is False
+
+    asyncio.run(_run())
+    assert "order_submit_rejected_fok_unfilled" in events
+    assert any(call.get("status") == "rejected_fok_unfilled" for call in metric.calls)
