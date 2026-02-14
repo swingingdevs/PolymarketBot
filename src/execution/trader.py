@@ -16,7 +16,19 @@ from config import Settings
 from execution.order_builder import OrderBuilder, configure_fee_rate_fetcher
 from markets.token_metadata_cache import TokenMetadataCache
 from auth.credentials import CredentialValidationError, init_client
-from metrics import BOT_API_CREDS_AGE_SECONDS, DAILY_REALIZED_PNL, RISK_LIMIT_BLOCKED, TRADES
+from metrics import (
+    BOT_API_CREDS_AGE_SECONDS,
+    DAILY_REALIZED_PNL,
+    HEARTBEAT_CANCEL_ACTIONS,
+    MAX_DAILY_LOSS_PCT_CONFIGURED,
+    MAX_DAILY_LOSS_USD_CONFIGURED,
+    MAX_OPEN_EXPOSURE_PER_MARKET_PCT_CONFIGURED,
+    MAX_OPEN_EXPOSURE_PER_MARKET_USD_CONFIGURED,
+    MAX_TOTAL_OPEN_EXPOSURE_PCT_CONFIGURED,
+    MAX_TOTAL_OPEN_EXPOSURE_USD_CONFIGURED,
+    RISK_LIMIT_BLOCKED,
+    TRADES,
+)
 from utils.rounding import round_price_up_to_tick, round_size_to_step
 
 logger = structlog.get_logger(__name__)
@@ -827,6 +839,54 @@ class Trader:
                 return self.client.post_order(limit_order)
 
         raise RuntimeError("unsupported_order_submission_api")
+
+    def send_heartbeat(self) -> bool:
+        if self.settings.dry_run:
+            return True
+        if self.client is None:
+            logger.warning("heartbeat_skipped_missing_client")
+            return False
+
+        for method_name in ("heartbeat", "send_heartbeat", "post_heartbeat", "create_heartbeat"):
+            method = getattr(self.client, method_name, None)
+            if method is None:
+                continue
+            try:
+                response = method()
+            except Exception as exc:
+                logger.warning("heartbeat_send_error", method=method_name, error=str(exc))
+                return False
+            logger.debug("heartbeat_sent", method=method_name, response=response)
+            return True
+
+        logger.warning("heartbeat_method_unavailable")
+        return False
+
+    async def cancel_outstanding_orders(self) -> bool:
+        if self.settings.dry_run:
+            HEARTBEAT_CANCEL_ACTIONS.labels(status="skipped_dry_run").inc()
+            logger.info("cancel_outstanding_orders_skipped_dry_run")
+            return False
+        if self.client is None:
+            HEARTBEAT_CANCEL_ACTIONS.labels(status="missing_client").inc()
+            logger.warning("cancel_outstanding_orders_missing_client")
+            return False
+
+        for method_name in ("cancel_all", "cancel_all_orders", "cancel_orders"):
+            method = getattr(self.client, method_name, None)
+            if method is None:
+                continue
+            try:
+                await asyncio.to_thread(method)
+                logger.warning("cancel_outstanding_orders_executed", method=method_name)
+                return True
+            except Exception as exc:
+                logger.warning("cancel_outstanding_orders_failed", method=method_name, error=str(exc))
+                return False
+
+        HEARTBEAT_CANCEL_ACTIONS.labels(status="endpoint_unavailable").inc()
+        logger.warning("cancel_outstanding_orders_endpoint_unavailable")
+        return False
 
     async def buy_fok(
         self,
