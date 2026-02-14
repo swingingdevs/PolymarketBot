@@ -69,3 +69,52 @@ def test_watch_mode_triggers_from_zscore_without_large_window_return() -> None:
 
     assert sm.watch_mode
     assert sm.watch_mode_started_at == t0 + len(prices) - 1
+
+
+def _build_state_machine_for_start_price_tests() -> StrategyStateMachine:
+    StrategyStateMachine.rolling_window_seconds = 60
+    StrategyStateMachine.watch_mode_expiry_seconds = 60
+    StrategyStateMachine.watch_zscore_threshold = 0.0
+    return StrategyStateMachine(0.5, hammer_secs=15, d_min=5, max_entry_price=0.97, fee_bps=10)
+
+
+def test_start_price_updates_on_first_tick_after_5m_boundary() -> None:
+    sm = _build_state_machine_for_start_price_tests()
+
+    sm.on_price(299.2, 100.0, metadata={"source": "chainlink_rtds", "timestamp": 299.2})
+    assert sm.start_prices[300] == 100.0
+    assert sm.start_price_metadata[300] == {
+        "price": 100.0,
+        "timestamp": 299.2,
+        "source": "chainlink_rtds",
+    }
+
+    sm.on_price(301.7, 101.5, metadata={"source": "chainlink_rtds", "timestamp": 301.7})
+
+    assert sm.start_prices[300] == 101.5
+    assert sm.start_price_metadata[300] == {
+        "price": 101.5,
+        "timestamp": 301.7,
+        "source": "chainlink_rtds",
+    }
+
+
+def test_start_price_updates_on_first_tick_after_15m_boundary() -> None:
+    sm = _build_state_machine_for_start_price_tests()
+
+    sm.on_price(899.1, 200.0, metadata={"source": "chainlink_rtds", "timestamp": 899.1})
+    assert sm.start_prices[900] == 200.0
+    assert sm.start_price_metadata[900] == {
+        "price": 200.0,
+        "timestamp": 899.1,
+        "source": "chainlink_rtds",
+    }
+
+    sm.on_price(901.4, 199.25, metadata={"source": "chainlink_rtds", "timestamp": 901.4})
+
+    assert sm.start_prices[900] == 199.25
+    assert sm.start_price_metadata[900] == {
+        "price": 199.25,
+        "timestamp": 901.4,
+        "source": "chainlink_rtds",
+    }
