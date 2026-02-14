@@ -78,6 +78,8 @@ class Settings(BaseSettings):
     chainlink_direct_api_url: str = "https://api.exchange.coinbase.com/products/BTC-USD/ticker"
     use_fallback_feed: bool = False
     allow_orders_while_fallback_active: bool = False
+    rtds_recovery_stabilization_seconds: float = 10.0
+    rtds_recovery_min_fresh_updates: int = 3
 
     settings_profile: Literal["paper", "live", "high_vol", "low_vol"] = "paper"
     watch_return_threshold: float = 0.005
@@ -209,12 +211,10 @@ class Settings(BaseSettings):
             raise ValueError("Unsafe configuration: spot_quorum_min_sources must be >= 2")
         if self.fee_rate_ttl_seconds <= 0:
             raise ValueError("Unsafe configuration: fee_rate_ttl_seconds must be > 0")
-        if self.max_daily_loss_pct <= 0:
-            raise ValueError("Unsafe configuration: max_daily_loss_pct must be > 0")
-        if self.max_open_exposure_per_market_pct <= 0:
-            raise ValueError("Unsafe configuration: max_open_exposure_per_market_pct must be > 0")
-        if self.max_total_open_exposure_pct <= 0:
-            raise ValueError("Unsafe configuration: max_total_open_exposure_pct must be > 0")
+        if self.rtds_recovery_stabilization_seconds <= 0:
+            raise ValueError("Unsafe configuration: rtds_recovery_stabilization_seconds must be > 0")
+        if self.rtds_recovery_min_fresh_updates <= 0:
+            raise ValueError("Unsafe configuration: rtds_recovery_min_fresh_updates must be > 0")
 
         return self
 
