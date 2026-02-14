@@ -283,7 +283,15 @@ async def orchestrate() -> None:
                     with contextlib.suppress(asyncio.CancelledError):
                         await resubscribe_task
                     top = next_book_task.result()
-                    strategy.on_book(top.token_id, top.best_bid, top.best_ask)
+                    strategy.on_book(
+                        top.token_id,
+                        top.best_bid,
+                        top.best_ask,
+                        bid_size=top.best_bid_size,
+                        ask_size=top.best_ask_size,
+                        fill_prob=top.fill_prob,
+                        ts=top.ts,
+                    )
                     continue
 
                 next_book_task.cancel()
