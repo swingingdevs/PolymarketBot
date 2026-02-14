@@ -134,6 +134,9 @@ async def orchestrate() -> None:
         d_min=settings.d_min,
         max_entry_price=settings.max_entry_price,
         fee_bps=settings.fee_bps,
+        rolling_window_seconds=settings.watch_rolling_window_seconds,
+        watch_zscore_threshold=settings.watch_zscore_threshold,
+        watch_mode_expiry_seconds=settings.watch_mode_expiry_seconds,
     )
 
     market_state: dict[str, UpDownMarket] = {}
