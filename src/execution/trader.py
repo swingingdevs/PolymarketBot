@@ -481,7 +481,7 @@ class Trader:
             if tick_size is None:
                 tick_size = self.token_metadata_cache.get_tick_size(token_id, fallback_tick_size=0.001)
             if min_order_size is None:
-                min_order_size = self.token_metadata_cache.get_min_order_size(token_id, fallback_min_order_size=0.1)
+                min_order_size = self.token_metadata_cache.get_min_order_size(token_id)
 
         tick_size = tick_size or 0.001
         min_order_size = min_order_size or 0.1
