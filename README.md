@@ -19,6 +19,18 @@ Production-ready Python 3.11 trading bot for Polymarket BTC Up/Down 5m and 15m c
   - executes highest EV candidate under constraints
 - Dry-run mode, risk limits, JSON logs, Prometheus metrics endpoint.
 
+
+## Price Feed Details
+
+This bot **must** use the Chainlink Data Streams aggregated BTC/USD reference feed for decisioning.
+Polymarket market resolution is based on Chainlink aggregated reference prices, not Binance spot prints.
+
+- ✅ Correct feed: `crypto_prices_chainlink` topic with `BTC/USD` symbol.
+- ❌ Incorrect feed: Binance-only spot prices (e.g., `BTCUSDT`) for resolution logic.
+
+> **Warning:** Using the wrong price feed can systematically misprice outcomes and cause persistent losses,
+> even if all other strategy logic is correct.
+
 ## Repo layout
 
 ```text

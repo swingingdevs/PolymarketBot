@@ -12,6 +12,17 @@ class Settings(BaseSettings):
     gamma_api_url: HttpUrl = "https://gamma-api.polymarket.com"
 
     symbol: str = "BTC/USD"
+    rtds_topic: str = "crypto_prices_chainlink"
+    log_price_comparison: bool = True
+
+    rtds_ping_interval: int = 30
+    rtds_pong_timeout: int = 10
+    rtds_reconnect_delay_min: int = 1
+    rtds_reconnect_delay_max: int = 60
+    price_staleness_threshold: int = 10
+    chainlink_direct_api_url: str = "https://api.chain.link/streams/btc-usd"
+    use_fallback_feed: bool = True
+
     watch_return_threshold: float = 0.005
     hammer_secs: int = 15
     d_min: float = 5.0

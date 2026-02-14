@@ -4,8 +4,13 @@ import math
 from collections import deque
 from dataclasses import dataclass
 
+import structlog
+
 from metrics import CURRENT_EV, WATCH_EVENTS
 from markets.gamma_cache import UpDownMarket
+from utils.price_validation import is_price_stale, validate_price_source
+
+logger = structlog.get_logger(__name__)
 
 
 @dataclass(slots=True)
@@ -39,6 +44,7 @@ class StrategyStateMachine:
         self.watch_mode = False
 
         self.start_prices: dict[int, float] = {}
+        self.start_price_metadata: dict[int, dict[str, object]] = {}
         self.prices_1s: deque[tuple[int, float]] = deque(maxlen=120)
         self.books: dict[str, BookSnapshot] = {}
 
@@ -50,15 +56,33 @@ class StrategyStateMachine:
             snap.ask = ask
         self.books[token_id] = snap
 
-    def on_price(self, ts: float, price: float) -> None:
+    def on_price(self, ts: float, price: float, metadata: dict[str, object] | None = None) -> None:
+        metadata = metadata or {"source": "chainlink_rtds", "timestamp": ts}
+
+        if not validate_price_source(metadata):
+            logger.warning("invalid_price_source", metadata=metadata)
+            return
+        if is_price_stale(float(metadata.get("timestamp", ts)), stale_after_seconds=2.0):
+            logger.warning("stale_price_update", timestamp=metadata.get("timestamp", ts))
+
         sec = int(ts)
         self.prices_1s.append((sec, price))
         self.last_price = price
 
         if sec % 300 == 0:
             self.start_prices[300] = price
+            self.start_price_metadata[300] = {
+                "price": price,
+                "timestamp": float(metadata.get("timestamp", ts)),
+                "source": metadata.get("source", "unknown"),
+            }
         if sec % 900 == 0:
             self.start_prices[900] = price
+            self.start_price_metadata[900] = {
+                "price": price,
+                "timestamp": float(metadata.get("timestamp", ts)),
+                "source": metadata.get("source", "unknown"),
+            }
 
         minute = sec - (sec % 60)
         if self.curr_minute_start is None:
