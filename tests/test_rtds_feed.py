@@ -239,7 +239,7 @@ def test_rtds_staleness_uses_normalized_timestamps(monkeypatch: pytest.MonkeyPat
     assert stale[0]["stale_seconds"] == 5.0
 
 
-def test_rtds_backoff_resets_after_stable_message(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_rtds_reconnect_before_stability_window_does_not_reset_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
     attempts = iter(
         [
             _FailingConnectCtx(),
@@ -275,6 +275,69 @@ def test_rtds_backoff_resets_after_stable_message(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr("feeds.rtds.websockets.connect", _connect)
     monkeypatch.setattr("feeds.rtds.asyncio.sleep", _fake_sleep)
+    monkeypatch.setattr("feeds.rtds.time.time", lambda: 100.0)
+
+    feed = RTDSFeed(
+        "wss://unused",
+        symbol="btc/usd",
+        reconnect_delay_min=1,
+        reconnect_delay_max=8,
+        reconnect_stability_duration=60.0,
+        log_price_comparison=False,
+    )
+
+    async def _run() -> None:
+        stream = feed.stream_prices()
+        ts, price, _metadata = await stream.__anext__()
+        assert ts == 10.0
+        assert price == 50000.0
+        with pytest.raises(RuntimeError, match="stop"):
+            await stream.__anext__()
+
+    asyncio.run(_run())
+
+    assert reconnect_delays == [1, 2]
+
+
+def test_rtds_reconnect_after_stability_window_resets_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    attempts = iter(
+        [
+            _FailingConnectCtx(),
+            _FakeConnectCtx(
+                _FakeWebSocket(
+                    [
+                        json.dumps(
+                            {
+                                "topic": "crypto_prices_chainlink",
+                                "payload": {
+                                    "symbol": "btc/usd",
+                                    "value": "50000",
+                                    "timestamp": 10.0,
+                                },
+                            }
+                        )
+                    ]
+                )
+            ),
+            _FailingConnectCtx(),
+        ]
+    )
+
+    def _connect(*_args, **_kwargs):
+        return next(attempts)
+
+    reconnect_delays: list[float] = []
+
+    async def _fake_sleep(delay: float) -> None:
+        reconnect_delays.append(delay)
+        if len(reconnect_delays) >= 2:
+            raise RuntimeError("stop")
+
+    timeline = iter([100.0, 170.0, 170.0, 170.0])
+
+    monkeypatch.setattr("feeds.rtds.websockets.connect", _connect)
+    monkeypatch.setattr("feeds.rtds.asyncio.sleep", _fake_sleep)
+    monkeypatch.setattr("feeds.rtds.time.time", lambda: next(timeline, 170.0))
 
     feed = RTDSFeed(
         "wss://unused",
