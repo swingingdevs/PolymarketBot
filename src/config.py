@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     max_usd_per_trade: float = 50.0
     max_daily_loss: float = 250.0
     max_trades_per_hour: int = 4
+    risk_state_path: str = ".state/risk_state.json"
 
     clob_host: str = "https://clob.polymarket.com"
     chain_id: int = 137
