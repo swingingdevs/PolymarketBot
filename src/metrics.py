@@ -25,6 +25,8 @@ except Exception:  # pragma: no cover
 WATCH_EVENTS = Counter("bot_watch_events_total", "Number of watch triggers")
 TRADES = Counter("bot_trades_total", "Trades placed", ["status", "side", "horizon"])
 CURRENT_EV = Gauge("bot_current_best_ev", "Best EV at decision point")
+DAILY_REALIZED_PNL = Gauge("bot_daily_realized_pnl_usd", "Daily realized PnL in USD")
+RISK_LIMIT_BLOCKED = Gauge("bot_risk_limit_blocked", "1 if trading is blocked by risk limits")
 
 
 def start_metrics_server(host: str, port: int) -> None:

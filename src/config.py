@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     rtds_reconnect_delay_min: int = 1
     rtds_reconnect_delay_max: int = 60
     price_staleness_threshold: int = 10
+    clob_book_staleness_threshold: int = 10
     chainlink_direct_api_url: str = "https://api.chain.link/streams/btc-usd"
     use_fallback_feed: bool = True
 
@@ -33,6 +34,7 @@ class Settings(BaseSettings):
     max_usd_per_trade: float = 50.0
     max_daily_loss: float = 250.0
     max_trades_per_hour: int = 4
+    risk_state_path: str = ".state/risk_state.json"
 
     clob_host: str = "https://clob.polymarket.com"
     chain_id: int = 137
@@ -42,5 +44,6 @@ class Settings(BaseSettings):
     api_passphrase: str = Field(default="", repr=False)
 
     quote_size_usd: float = 20.0
+    order_submit_timeout_seconds: float = 5.0
     metrics_host: str = "0.0.0.0"
     metrics_port: int = 9102
