@@ -11,14 +11,25 @@ class _FakeClobClient:
     def __init__(self, **kwargs) -> None:
         self.kwargs = kwargs
         self.creds = None
-        self.create_and_post_order_called = False
+        self.derived_creds = {"api_key": "dk", "api_secret": "ds", "api_passphrase": "dp"}
+        self.derive_called = False
+        self.create_market_order_called = False
+        self.post_order_called = False
+
+    def create_or_derive_api_creds(self):
+        self.derive_called = True
+        return self.derived_creds
 
     def set_api_creds(self, creds) -> None:
         self.creds = creds
 
-    def create_and_post_order(self, _args):
-        self.create_and_post_order_called = True
-        return {"ok": True}
+    def create_market_order(self, **kwargs):
+        self.create_market_order_called = True
+        return kwargs
+
+    def post_order(self, order, time_in_force="FOK"):
+        self.post_order_called = True
+        return {"ok": True, "order": order, "time_in_force": time_in_force}
 
 
 def _build_settings(tmp_path, **overrides):
@@ -28,6 +39,8 @@ def _build_settings(tmp_path, **overrides):
         "clob_host": "https://clob.polymarket.com",
         "chain_id": 137,
         "private_key": "0xabc",
+        "signature_type": None,
+        "funder": "",
         "api_key": "",
         "api_secret": "",
         "api_passphrase": "",
@@ -56,17 +69,23 @@ def test_dry_run_does_not_require_l2_creds(monkeypatch, tmp_path) -> None:
 def test_live_mode_initializes_l2_auth(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(trader_module, "ClobClient", _FakeClobClient)
 
-    trader = Trader(_build_settings(tmp_path, dry_run=False, api_key="k", api_secret="s", api_passphrase="p"))
+    trader = Trader(_build_settings(tmp_path, dry_run=False, api_key="k", api_secret="s", api_passphrase="p", signature_type=2, funder="0xfunder"))
 
     assert isinstance(trader.client, _FakeClobClient)
+    assert trader.client.kwargs.get("signature_type") == 2
+    assert trader.client.kwargs.get("funder") == "0xfunder"
     assert trader._live_auth_ready is True
+    assert trader.client.derive_called is True
     assert trader.client.creds is not None
 
 
 def test_live_order_blocked_when_l2_creds_missing(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr(trader_module, "ClobClient", _FakeClobClient)
-    monkeypatch.setattr(trader_module, "OrderArgs", lambda **kwargs: kwargs)
+    class _NoCredsClobClient(_FakeClobClient):
+        def create_or_derive_api_creds(self):
+            self.derive_called = True
+            return None
 
+    monkeypatch.setattr(trader_module, "ClobClient", _NoCredsClobClient)
     logger_calls = []
 
     class _Logger:
@@ -86,4 +105,4 @@ def test_live_order_blocked_when_l2_creds_missing(monkeypatch, tmp_path) -> None
 
     assert ok is False
     assert any(call[0] == "missing_clob_l2_credentials" for call in logger_calls)
-    assert trader.client.create_and_post_order_called is False
+    assert trader.client.post_order_called is False
