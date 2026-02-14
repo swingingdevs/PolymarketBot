@@ -65,6 +65,11 @@ MAX_TOTAL_OPEN_EXPOSURE_PCT_CONFIGURED = Gauge(
 )
 KILL_SWITCH_ACTIVE = Gauge("bot_kill_switch_active", "1 if divergence kill-switch is active")
 TRADING_ALLOWED = Gauge("bot_trading_allowed", "1 if trading is currently allowed")
+GEOBLOCK_BLOCKED = Gauge(
+    "bot_geoblock_blocked",
+    "1 if the current deployment IP is geoblocked for trading",
+    ["country", "region"],
+)
 ORACLE_SPOT_DIVERGENCE_PCT = Gauge(
     "bot_oracle_spot_divergence_pct",
     "Percent divergence between oracle and spot quorum consensus",

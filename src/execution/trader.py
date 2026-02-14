@@ -15,17 +15,8 @@ import structlog
 from config import Settings
 from execution.order_builder import OrderBuilder, configure_fee_rate_fetcher
 from markets.token_metadata_cache import TokenMetadataCache
-from metrics import (
-    DAILY_REALIZED_PNL,
-    MAX_DAILY_LOSS_PCT_CONFIGURED,
-    MAX_DAILY_LOSS_USD_CONFIGURED,
-    MAX_OPEN_EXPOSURE_PER_MARKET_PCT_CONFIGURED,
-    MAX_OPEN_EXPOSURE_PER_MARKET_USD_CONFIGURED,
-    MAX_TOTAL_OPEN_EXPOSURE_PCT_CONFIGURED,
-    MAX_TOTAL_OPEN_EXPOSURE_USD_CONFIGURED,
-    RISK_LIMIT_BLOCKED,
-    TRADES,
-)
+from auth.credentials import CredentialValidationError, init_client
+from metrics import BOT_API_CREDS_AGE_SECONDS, DAILY_REALIZED_PNL, RISK_LIMIT_BLOCKED, TRADES
 from utils.rounding import round_price_up_to_tick, round_size_to_step
 
 logger = structlog.get_logger(__name__)
@@ -98,19 +89,6 @@ class Trader:
         )
 
         if not settings.dry_run and ClobClient is not None:
-            client_kwargs: dict[str, Any] = {
-                "host": settings.clob_host,
-                "chain_id": settings.chain_id,
-                "key": settings.private_key,
-            }
-            signature_type = getattr(settings, "signature_type", None)
-            if signature_type is not None:
-                client_kwargs["signature_type"] = signature_type
-            funder = str(getattr(settings, "funder", "") or "").strip()
-            if funder:
-                client_kwargs["funder"] = funder
-
-            self.client = ClobClient(**client_kwargs)
             self._live_auth_ready = self._initialize_live_auth()
 
         self.order_builder = OrderBuilder(
@@ -142,16 +120,33 @@ class Trader:
         return derived_creds
 
     def _initialize_live_auth(self) -> bool:
-        if self.client is None:
-            logger.error("missing_clob_client")
-            return False
-
         try:
             derived_creds: Any = None
-            if hasattr(self.client, "create_or_derive_api_creds"):
-                derived_creds = self.client.create_or_derive_api_creds()
-            elif hasattr(self.client, "derive_api_key"):
-                derived_creds = self.client.derive_api_key()
+            if bool(self.settings.api_key and self.settings.api_secret and self.settings.api_passphrase):
+                if not self.settings.allow_static_creds or not self.settings.static_creds_confirmation:
+                    logger.error("static_clob_creds_not_allowed")
+                    return False
+                logger.warning("using_static_clob_creds_emergency_fallback")
+            else:
+                if self.settings.api_cred_rotation_seconds <= 0:
+                    logger.error("invalid_api_cred_rotation_seconds")
+                    return False
+
+            self.client = init_client(
+                signer=self.settings.private_key,
+                derived_creds=derived_creds,
+                signature_type=self.settings.signature_type,
+                funder_address=self.settings.funder_address,
+                host=self.settings.clob_host,
+                chain_id=self.settings.chain_id,
+                clob_client_cls=ClobClient,
+            )
+
+            if not bool(self.settings.api_key and self.settings.api_secret and self.settings.api_passphrase):
+                if hasattr(self.client, "derive_api_key"):
+                    derived_creds = self.client.derive_api_key()
+                elif hasattr(self.client, "create_api_key"):
+                    derived_creds = self.client.create_api_key()
 
             if hasattr(self.client, "set_api_creds"):
                 creds_payload = self._build_api_creds_payload(derived_creds)
@@ -167,6 +162,11 @@ class Trader:
 
             if hasattr(self.client, "assert_level_2_auth"):
                 self.client.assert_level_2_auth()
+
+            BOT_API_CREDS_AGE_SECONDS.set(0)
+        except CredentialValidationError as exc:
+            logger.error("invalid_clob_client_configuration", error=str(exc))
+            return False
         except Exception as exc:
             logger.error("clob_l2_auth_initialization_failed", error=str(exc))
             return False

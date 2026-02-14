@@ -150,8 +150,23 @@ class Settings(BaseSettings):
 
     clob_host: str = "https://clob.polymarket.com"
     chain_id: int = 137
-    signature_type: int | None = None
-    funder: str = ""
+    signature_type: int = Field(
+        default=2,
+        validation_alias=AliasChoices("signature_type", "SIGNATURE_TYPE"),
+        description="Wallet signature mode: EOA (0), Magic-link proxy (1), Gnosis Safe (2).",
+    )
+    funder_address: str = Field(
+        default="",
+        validation_alias=AliasChoices("funder_address", "funder", "FUNDER_ADDRESS", "FUNDER"),
+        description="Proxy wallet that funds orders. Required for trading clients.",
+    )
+    allow_static_creds: bool = Field(default=False, validation_alias=AliasChoices("allow_static_creds", "ALLOW_STATIC_CREDS"))
+    static_creds_confirmation: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("static_creds_confirmation", "STATIC_CREDS_CONFIRMATION"),
+        description="Explicit confirmation required before static API creds can be used.",
+    )
+    api_cred_rotation_seconds: int = Field(default=60 * 60 * 24 * 7)
     private_key: str = Field(default="", repr=False)
     api_key: str = Field(default="", repr=False)
     api_secret: str = Field(default="", repr=False)
@@ -168,6 +183,7 @@ class Settings(BaseSettings):
     recorder_enabled: bool = False
     recorder_output_path: str = "artifacts/session_recording.jsonl"
     recorder_queue_maxsize: int = 10000
+    geoblock_abort: bool = True
 
     @model_validator(mode="after")
     def apply_profile_defaults(self) -> "Settings":
