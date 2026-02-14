@@ -84,6 +84,8 @@ class Settings(BaseSettings):
 
     clob_host: str = "https://clob.polymarket.com"
     chain_id: int = 137
+    signature_type: int | None = None
+    funder: str = ""
     private_key: str = Field(default="", repr=False)
     api_key: str = Field(default="", repr=False)
     api_secret: str = Field(default="", repr=False)

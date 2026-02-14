@@ -14,18 +14,16 @@ import structlog
 from config import Settings
 from markets.token_metadata_cache import TokenMetadataCache
 from metrics import DAILY_REALIZED_PNL, RISK_LIMIT_BLOCKED, TRADES
-from utils.rounding import round_size_to_step
+from utils.rounding import round_price_to_tick, round_size_to_step
 
 logger = structlog.get_logger(__name__)
 
 try:
     from py_clob_client.client import ClobClient
     from py_clob_client.clob_types import ApiCreds
-    from py_clob_client.clob_types import OrderArgs
 except Exception:  # pragma: no cover
     ClobClient = None
     ApiCreds = None
-    OrderArgs = None
 
 
 @dataclass(slots=True)
@@ -62,47 +60,66 @@ class Trader:
         self._live_auth_ready = False
 
         if not settings.dry_run and ClobClient is not None:
-            self.client = ClobClient(
-                host=settings.clob_host,
-                chain_id=settings.chain_id,
-                key=settings.private_key,
-            )
+            client_kwargs: dict[str, Any] = {
+                "host": settings.clob_host,
+                "chain_id": settings.chain_id,
+                "key": settings.private_key,
+            }
+            signature_type = getattr(settings, "signature_type", None)
+            if signature_type is not None:
+                client_kwargs["signature_type"] = signature_type
+            funder = str(getattr(settings, "funder", "") or "").strip()
+            if funder:
+                client_kwargs["funder"] = funder
+
+            self.client = ClobClient(**client_kwargs)
             self._live_auth_ready = self._initialize_live_auth()
+
+    def _build_api_creds_payload(self, derived_creds: Any) -> Any:
+        has_static_creds = bool(self.settings.api_key and self.settings.api_secret and self.settings.api_passphrase)
+
+        if has_static_creds:
+            if ApiCreds is not None:
+                return ApiCreds(
+                    api_key=self.settings.api_key,
+                    api_secret=self.settings.api_secret,
+                    api_passphrase=self.settings.api_passphrase,
+                )
+            return {
+                "api_key": self.settings.api_key,
+                "api_secret": self.settings.api_secret,
+                "api_passphrase": self.settings.api_passphrase,
+            }
+
+        if derived_creds is None:
+            return None
+        if ApiCreds is not None and isinstance(derived_creds, dict):
+            return ApiCreds(**derived_creds)
+        return derived_creds
 
     def _initialize_live_auth(self) -> bool:
         if self.client is None:
             logger.error("missing_clob_client")
             return False
 
-        if not (self.settings.api_key and self.settings.api_secret and self.settings.api_passphrase):
-            logger.error(
-                "missing_clob_l2_credentials",
-                has_api_key=bool(self.settings.api_key),
-                has_api_secret=bool(self.settings.api_secret),
-                has_api_passphrase=bool(self.settings.api_passphrase),
-            )
-            return False
-
         try:
-            if hasattr(self.client, "set_api_creds"):
-                creds_payload: Any
-                if ApiCreds is not None:
-                    creds_payload = ApiCreds(
-                        api_key=self.settings.api_key,
-                        api_secret=self.settings.api_secret,
-                        api_passphrase=self.settings.api_passphrase,
-                    )
-                else:
-                    creds_payload = {
-                        "api_key": self.settings.api_key,
-                        "api_secret": self.settings.api_secret,
-                        "api_passphrase": self.settings.api_passphrase,
-                    }
-                self.client.set_api_creds(creds_payload)
-            elif hasattr(self.client, "create_or_derive_api_creds"):
-                self.client.create_or_derive_api_creds()
+            derived_creds: Any = None
+            if hasattr(self.client, "create_or_derive_api_creds"):
+                derived_creds = self.client.create_or_derive_api_creds()
             elif hasattr(self.client, "derive_api_key"):
-                self.client.derive_api_key()
+                derived_creds = self.client.derive_api_key()
+
+            if hasattr(self.client, "set_api_creds"):
+                creds_payload = self._build_api_creds_payload(derived_creds)
+                if creds_payload is None:
+                    logger.error(
+                        "missing_clob_l2_credentials",
+                        has_api_key=bool(self.settings.api_key),
+                        has_api_secret=bool(self.settings.api_secret),
+                        has_api_passphrase=bool(self.settings.api_passphrase),
+                    )
+                    return False
+                self.client.set_api_creds(creds_payload)
 
             if hasattr(self.client, "assert_level_2_auth"):
                 self.client.assert_level_2_auth()
@@ -394,6 +411,8 @@ class Trader:
             return "timeout"
         if any(k in text for k in ("401", "403", "unauthorized", "forbidden", "invalid api", "auth")):
             return "auth"
+        if any(k in text for k in ("allowance", "approval", "approve", "not approved", "insufficient allowance")):
+            return "allowance"
         if any(k in name for k in ("connection", "network", "socket")):
             return "network"
         if any(k in text for k in ("connection", "network", "dns", "socket", "refused", "unreachable")):
@@ -421,6 +440,49 @@ class Trader:
         if tick_size is not None and tick_size > 0:
             current.tick_size = float(tick_size)
         self.token_constraints_by_id[token_id] = current
+
+    def _submit_live_fok_order(self, token_id: str, px: float, size: float) -> Any:
+        if self.client is None:
+            raise RuntimeError("missing_clob_client")
+
+        if hasattr(self.client, "create_market_order") and hasattr(self.client, "post_order"):
+            market_args = {"token_id": token_id, "side": "BUY", "size": size}
+            market_order = self.client.create_market_order(**market_args)
+            try:
+                return self.client.post_order(market_order, time_in_force="FOK")
+            except TypeError:
+                return self.client.post_order(market_order)
+
+        if hasattr(self.client, "create_limit_order") and hasattr(self.client, "post_order"):
+            fallback_errors: list[Exception] = []
+            for tif in ("FOK", "IOC", "GTC"):
+                try:
+                    limit_order = self.client.create_limit_order(
+                        price=px,
+                        size=size,
+                        side="BUY",
+                        token_id=token_id,
+                        time_in_force=tif,
+                    )
+                    try:
+                        response = self.client.post_order(limit_order, time_in_force=tif)
+                    except TypeError:
+                        response = self.client.post_order(limit_order)
+
+                    if tif == "GTC" and hasattr(self.client, "cancel"):
+                        order_id = None
+                        if isinstance(response, dict):
+                            order_id = response.get("orderID") or response.get("id")
+                        if order_id:
+                            self.client.cancel(order_id)
+                    return response
+                except Exception as exc:
+                    fallback_errors.append(exc)
+                    continue
+            if fallback_errors:
+                raise fallback_errors[-1]
+
+        raise RuntimeError("unsupported_order_submission_api")
 
     async def buy_fok(self, token_id: str, ask: float, horizon: str) -> bool:
         constraints = self.token_constraints_by_id.get(token_id, TokenConstraints())
@@ -488,7 +550,7 @@ class Trader:
             TRADES.labels(status="dry_run", side="buy", horizon=horizon).inc()
             return True
 
-        if self.client is None or OrderArgs is None:
+        if self.client is None:
             logger.error("missing_clob_client")
             TRADES.labels(status="error", side="buy", horizon=horizon).inc()
             return False
@@ -498,10 +560,9 @@ class Trader:
             TRADES.labels(status="error", side="buy", horizon=horizon).inc()
             return False
 
-        args = OrderArgs(price=px, size=size, side="BUY", token_id=token_id, time_in_force="FOK")
         try:
             resp = await asyncio.wait_for(
-                asyncio.to_thread(self.client.create_and_post_order, args),
+                asyncio.to_thread(self._submit_live_fok_order, token_id, px, size),
                 timeout=self.settings.order_submit_timeout_seconds,
             )
         except asyncio.TimeoutError:
@@ -516,8 +577,13 @@ class Trader:
             return False
         except Exception as exc:
             failure_type = self._classify_submit_exception(exc)
+            event = "order_submit_failed"
+            if failure_type == "auth":
+                event = "order_submit_auth_failed"
+            elif failure_type == "allowance":
+                event = "order_submit_allowance_failed"
             logger.warning(
-                "order_submit_failed",
+                event,
                 token_id=token_id,
                 ask=px,
                 size=size,
