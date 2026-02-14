@@ -14,6 +14,7 @@ from feeds.clob_ws import BookTop, CLOBWebSocket
 from feeds.coinbase_ws import CoinbaseSpotFeed
 from feeds.rtds import RTDSFeed
 from logging_utils import configure_logging
+from markets.fee_rate_cache import FeeRateCache
 from markets.gamma_cache import GammaCache, UpDownMarket
 from markets.token_metadata_cache import TokenMetadataCache
 from ops.recorder import EventRecorder
@@ -169,6 +170,7 @@ async def orchestrate() -> None:
     )
 
     token_metadata_cache = TokenMetadataCache(ttl_seconds=settings.token_metadata_ttl_seconds)
+    fee_rate_cache = FeeRateCache(settings.clob_host, ttl_seconds=settings.fee_rate_ttl_seconds)
     trader = Trader(settings, token_metadata_cache=token_metadata_cache)
     calibrator = load_probability_calibrator(
         method=settings.calibration_method,
@@ -182,6 +184,7 @@ async def orchestrate() -> None:
         d_min=settings.d_min,
         max_entry_price=settings.max_entry_price,
         fee_bps=settings.fee_bps,
+        fee_formula_exponent=settings.fee_formula_exponent,
         expected_notional_usd=settings.quote_size_usd,
         probability_calibrator=calibrator,
         calibration_input=settings.calibration_input,
@@ -235,10 +238,20 @@ async def orchestrate() -> None:
         metadata_updates = {}
         for market in subscribed_markets:
             metadata_updates.update(market.token_metadata_by_id)
+
+        new_token_ids = {m.up_token_id for m in subscribed_markets} | {m.down_token_id for m in subscribed_markets}
+        await fee_rate_cache.warm(new_token_ids)
+        for token_id in new_token_ids:
+            dynamic_fee_rate_bps = fee_rate_cache.get_fee_rate_bps(token_id)
+            existing = metadata_updates.get(token_id) or token_metadata_cache.get(token_id, allow_stale=True) or TokenMetadata()
+            metadata_updates[token_id] = TokenMetadata(
+                tick_size=existing.tick_size,
+                min_order_size=existing.min_order_size,
+                fee_rate_bps=dynamic_fee_rate_bps if dynamic_fee_rate_bps is not None else existing.fee_rate_bps,
+            )
         if metadata_updates:
             token_metadata_cache.put_many(metadata_updates)
 
-        new_token_ids = {m.up_token_id for m in subscribed_markets} | {m.down_token_id for m in subscribed_markets}
         if new_token_ids != token_ids:
             added_tokens = sorted(new_token_ids - token_ids)
             removed_tokens = sorted(token_ids - new_token_ids)
@@ -265,6 +278,7 @@ async def orchestrate() -> None:
         reconnect_delay_min=settings.rtds_reconnect_delay_min,
         reconnect_delay_max=settings.rtds_reconnect_delay_max,
         book_staleness_threshold=settings.clob_book_staleness_threshold,
+        book_depth_levels=settings.clob_book_depth_levels,
     )
 
     async def process_price(ts: float, px: float, metadata: dict[str, object]) -> None:
@@ -482,6 +496,8 @@ async def orchestrate() -> None:
                         ask_size=top.best_ask_size,
                         fill_prob=top.fill_prob,
                         ts=top.ts,
+                        bids_levels=top.bids_levels,
+                        asks_levels=top.asks_levels,
                     )
                     constraints = clob.get_token_constraints(top.token_id)
                     if constraints is not None:

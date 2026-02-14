@@ -26,6 +26,8 @@ class BookTop:
     best_bid_size: float | None = None
     best_ask_size: float | None = None
     fill_prob: float | None = None
+    bids_levels: list[tuple[float, float]] | None = None
+    asks_levels: list[tuple[float, float]] | None = None
 
 
 @dataclass(slots=True)
@@ -45,6 +47,7 @@ class CLOBWebSocket:
         reconnect_delay_max: int = 60,
         book_staleness_threshold: float = 10,
         stale_after_seconds: float | None = None,
+        book_depth_levels: int = 10,
     ) -> None:
         self.ws_base = ws_base.rstrip("/")
         self.ws_url = self._build_ws_url(self.ws_base)
@@ -53,6 +56,7 @@ class CLOBWebSocket:
         self.reconnect_delay_min = reconnect_delay_min
         self.reconnect_delay_max = reconnect_delay_max
         self.book_staleness_threshold = float(stale_after_seconds) if stale_after_seconds is not None else float(book_staleness_threshold)
+        self.book_depth_levels = max(1, int(book_depth_levels))
         self.token_metadata_cache: dict[str, TokenConstraints] = {}
         self._ws: websockets.WebSocketClientProtocol | None = None
         self._subscribed_token_ids: set[str] = set()
@@ -144,6 +148,32 @@ class CLOBWebSocket:
             )
             last_warning_at = time.time()
 
+
+    @staticmethod
+    def _parse_levels(levels: object, *, max_levels: int) -> list[tuple[float, float]]:
+        if not isinstance(levels, list):
+            return []
+
+        parsed_levels: list[tuple[float, float]] = []
+        for raw in levels:
+            if isinstance(raw, (list, tuple)) and len(raw) >= 2:
+                raw_price, raw_size = raw[0], raw[1]
+            elif isinstance(raw, dict):
+                raw_price, raw_size = raw.get("price"), raw.get("size")
+            else:
+                continue
+
+            try:
+                price = float(raw_price)
+                size = float(raw_size)
+            except (TypeError, ValueError):
+                continue
+            if price <= 0 or size <= 0:
+                continue
+            parsed_levels.append((price, size))
+            if len(parsed_levels) >= max_levels:
+                break
+        return parsed_levels
 
     @staticmethod
     def _extract_price_size(levels: object) -> tuple[float | None, float | None]:
@@ -249,6 +279,8 @@ class CLOBWebSocket:
 
         if event_type in {"book", "snapshot", "book_snapshot", "price_snapshot"}:
             bids, asks = self._extract_book_levels(event)
+            bids_levels = self._parse_levels(bids, max_levels=self.book_depth_levels)
+            asks_levels = self._parse_levels(asks, max_levels=self.book_depth_levels)
             bid, bid_size = self._extract_price_size(bids)
             ask, ask_size = self._extract_price_size(asks)
             if bid is None and ask is None:
@@ -320,8 +352,12 @@ class CLOBWebSocket:
                 bid_size = self._coerce_positive_float(change.get("best_bid_size"))
                 ask_size = self._coerce_positive_float(change.get("best_ask_size"))
 
+                change_bids_levels: list[tuple[float, float]] | None = None
+                change_asks_levels: list[tuple[float, float]] | None = None
                 if bid is None and ask is None:
                     change_bids, change_asks = self._extract_book_levels(change)
+                    change_bids_levels = self._parse_levels(change_bids, max_levels=self.book_depth_levels)
+                    change_asks_levels = self._parse_levels(change_asks, max_levels=self.book_depth_levels)
                     bid, bid_size = self._extract_price_size(change_bids)
                     ask, ask_size = self._extract_price_size(change_asks)
 

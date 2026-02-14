@@ -44,7 +44,7 @@ def test_candidate_ev_uses_calibrated_probability() -> None:
 
     sm.start_prices[300] = base - 100
     market = UpDownMarket("m5", t0 - 285, t0 + 15, "u5", "d5", 5)
-    candidate = sm._candidate_ev(market, "UP", ask=0.1)
+    candidate = sm._candidate_ev(market, "UP", ask=0.1, asks_levels=[(0.1, 100.0)])
 
     assert candidate is not None
     assert candidate.p_hat == 0.2
