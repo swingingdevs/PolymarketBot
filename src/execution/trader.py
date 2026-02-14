@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import asyncio
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import Any
 import structlog
 
 from config import Settings
+from markets.token_metadata_cache import TokenMetadataCache
 from metrics import DAILY_REALIZED_PNL, RISK_LIMIT_BLOCKED, TRADES
 from utils.rounding import round_price_to_tick, round_size_to_step
 
@@ -39,8 +41,9 @@ class RiskState:
 
 
 class Trader:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, token_metadata_cache: TokenMetadataCache | None = None) -> None:
         self.settings = settings
+        self.token_metadata_cache = token_metadata_cache
         self.client = None
         self._risk_state_path = Path(settings.risk_state_path)
         self.risk = self._load_risk_state()
@@ -332,7 +335,10 @@ class Trader:
     async def buy_fok(self, token_id: str, ask: float, horizon: str) -> bool:
         size = self.settings.quote_size_usd / ask
         size = round_size_to_step(size, 0.1)
-        px = round_price_to_tick(ask, 0.001)
+        tick_size = 0.001
+        if self.token_metadata_cache is not None:
+            tick_size = self.token_metadata_cache.get_tick_size(token_id, fallback_tick_size=tick_size)
+        px = round_price_to_tick(ask, tick_size)
 
         notional = size * px
         if not self._check_risk(notional, token_id=token_id, horizon=horizon, direction="BUY"):

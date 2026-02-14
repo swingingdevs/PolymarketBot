@@ -1,4 +1,5 @@
 from markets.gamma_cache import UpDownMarket
+from markets.token_metadata_cache import TokenMetadata, TokenMetadataCache
 from strategy.state_machine import StrategyStateMachine
 
 
@@ -67,3 +68,29 @@ def test_slippage_penalty_can_change_candidate_ranking() -> None:
     assert best is not None
     assert best.token_id == "u15"
     assert best.slippage_cost > 0
+
+
+def test_candidate_ev_uses_token_fee_rate_with_global_fallback() -> None:
+    cache = TokenMetadataCache(ttl_seconds=300)
+    cache.put("u5", TokenMetadata(tick_size=0.01, fee_rate_bps=25))
+
+    sm = StrategyStateMachine(
+        0.005,
+        hammer_secs=15,
+        d_min=1.0,
+        max_entry_price=0.99,
+        fee_bps=10,
+        token_metadata_cache=cache,
+    )
+
+    t0 = 1_710_000_000
+    _seed_state(sm, t0)
+    m5 = UpDownMarket("m5", t0 - 285, t0 + 15, "u5", "d5", 5)
+
+    with_token_fee = sm._candidate_ev(m5, "UP", ask=0.4, bid=0.39, ask_size=3.0, fill_prob=1.0, token_id="u5")
+    with_fallback_fee = sm._candidate_ev(m5, "UP", ask=0.4, bid=0.39, ask_size=3.0, fill_prob=1.0, token_id="missing")
+
+    assert with_token_fee is not None
+    assert with_fallback_fee is not None
+    assert with_token_fee.fee_cost == 0.0025
+    assert with_fallback_fee.fee_cost == 0.001

@@ -9,6 +9,7 @@ import pytest
 
 from config import Settings
 from execution.trader import Trader
+from markets.token_metadata_cache import TokenMetadata, TokenMetadataCache
 from feeds import clob_ws
 from feeds.clob_ws import BookTop, CLOBWebSocket
 from main import stream_clob_with_resubscribe, stream_prices_with_fallback
@@ -129,8 +130,14 @@ class _FakeDatetime:
         return _Now(hour=cls.fixed_hour, day=cls.fixed_day)
 
 
-def test_trader_risk_hourly_cap_and_daily_loss_lockout(monkeypatch: pytest.MonkeyPatch) -> None:
-    settings = Settings(dry_run=True, max_trades_per_hour=2, quote_size_usd=10, max_daily_loss=50)
+def test_trader_risk_hourly_cap_and_daily_loss_lockout(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    settings = Settings(
+        dry_run=True,
+        max_trades_per_hour=2,
+        quote_size_usd=10,
+        max_daily_loss=50,
+        risk_state_path=str(tmp_path / "risk_state.json"),
+    )
     trader = Trader(settings)
     monkeypatch.setattr("execution.trader.datetime", _FakeDatetime)
 
@@ -170,3 +177,18 @@ def test_market_epoch_roll_triggers_clob_resubscribe() -> None:
     assert first.token_id == "epoch-1-token"
     assert second.token_id == "epoch-2-token"
     assert clob.subscriptions == [["epoch-1-token"], ["epoch-2-token"]]
+
+
+def test_trader_buy_fok_uses_cached_token_tick_size(tmp_path) -> None:
+    settings = Settings(dry_run=True, quote_size_usd=10, risk_state_path=str(tmp_path / "risk_state.json"))
+    cache = TokenMetadataCache(ttl_seconds=300)
+    cache.put("token-a", TokenMetadata(tick_size=0.01, fee_rate_bps=5))
+    trader = Trader(settings, token_metadata_cache=cache)
+
+    async def _run() -> None:
+        assert await trader.buy_fok("token-a", ask=0.4567, horizon="5") is True
+
+    asyncio.run(_run())
+
+    # price should floor to 0.45 with 0.01 tick, not 0.456 with 0.001 tick
+    assert trader.risk.total_open_notional_usd == 9.81

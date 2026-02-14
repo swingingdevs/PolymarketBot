@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     clob_book_staleness_threshold: int = 10
     chainlink_direct_api_url: str = "https://api.chain.link/streams/btc-usd"
     use_fallback_feed: bool = True
+    settings_profile: str = "live"
 
     watch_return_threshold: float = 0.005
     watch_rolling_window_seconds: int = 60
@@ -91,6 +92,7 @@ class Settings(BaseSettings):
     order_submit_timeout_seconds: float = 5.0
     metrics_host: str = "0.0.0.0"
     metrics_port: int = 9102
+    token_metadata_ttl_seconds: float = 300.0
 
     @model_validator(mode="after")
     def apply_profile_defaults(self) -> "Settings":
@@ -100,23 +102,24 @@ class Settings(BaseSettings):
             raise ValueError(f"Unknown settings_profile={self.settings_profile}. Allowed: {allowed}")
 
         defaults = PROFILE_DEFAULTS[profile]
-        if self.watch_return_threshold is None:
+        fields_set = self.__pydantic_fields_set__
+        if "watch_return_threshold" not in fields_set:
             self.watch_return_threshold = float(defaults["watch_return_threshold"])
-        if self.hammer_secs is None:
+        if "hammer_secs" not in fields_set:
             self.hammer_secs = int(defaults["hammer_secs"])
-        if self.d_min is None:
+        if "d_min" not in fields_set:
             self.d_min = float(defaults["d_min"])
-        if self.max_entry_price is None:
+        if "max_entry_price" not in fields_set:
             self.max_entry_price = float(defaults["max_entry_price"])
-        if self.fee_bps is None:
+        if "fee_bps" not in fields_set:
             self.fee_bps = float(defaults["fee_bps"])
 
         if self.max_entry_price > 0.99:
             raise ValueError("Unsafe configuration: max_entry_price must be <= 0.99")
         if self.max_entry_price <= 0:
             raise ValueError("Unsafe configuration: max_entry_price must be > 0")
-        if self.fee_bps <= 0:
-            raise ValueError("Unsafe configuration: fee_bps must be > 0")
+        if self.fee_bps < 0:
+            raise ValueError("Unsafe configuration: fee_bps must be >= 0")
         if self.hammer_secs <= 0:
             raise ValueError("Unsafe configuration: hammer_secs must be > 0")
         if self.watch_return_threshold <= 0:

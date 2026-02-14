@@ -14,6 +14,7 @@ from feeds.clob_ws import BookTop, CLOBWebSocket
 from feeds.rtds import RTDSFeed
 from logging_utils import configure_logging
 from markets.gamma_cache import GammaCache, UpDownMarket
+from markets.token_metadata_cache import TokenMetadataCache
 from metrics import start_metrics_server
 from strategy.calibration import load_probability_calibrator
 from strategy.state_machine import StrategyStateMachine
@@ -128,7 +129,8 @@ async def orchestrate() -> None:
         log_price_comparison=settings.log_price_comparison,
     )
     fallback = ChainlinkDirectFeed(settings.chainlink_direct_api_url)
-    trader = Trader(settings)
+    token_metadata_cache = TokenMetadataCache(ttl_seconds=settings.token_metadata_ttl_seconds)
+    trader = Trader(settings, token_metadata_cache=token_metadata_cache)
     calibrator = load_probability_calibrator(
         method=settings.calibration_method,
         params_path=settings.calibration_params_path or None,
@@ -143,6 +145,10 @@ async def orchestrate() -> None:
         fee_bps=settings.fee_bps,
         probability_calibrator=calibrator,
         calibration_input=settings.calibration_input,
+        token_metadata_cache=token_metadata_cache,
+        rolling_window_seconds=settings.watch_rolling_window_seconds,
+        watch_zscore_threshold=settings.watch_zscore_threshold,
+        watch_mode_expiry_seconds=settings.watch_mode_expiry_seconds,
     )
 
     market_state: dict[str, UpDownMarket] = {}
@@ -168,6 +174,13 @@ async def orchestrate() -> None:
         m15 = await gamma.get_market(15, s15)
         pairs = [m5, m15]
         market_state = {m.slug: m for m in pairs}
+
+        metadata_updates = {}
+        for market in pairs:
+            metadata_updates.update(market.token_metadata_by_id)
+        if metadata_updates:
+            token_metadata_cache.put_many(metadata_updates)
+
         new_token_ids = {m.up_token_id for m in pairs} | {m.down_token_id for m in pairs}
         if new_token_ids != token_ids:
             added_tokens = sorted(new_token_ids - token_ids)
