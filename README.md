@@ -106,6 +106,34 @@ METRICS_HOST=0.0.0.0
 METRICS_PORT=9102
 ```
 
+## Parameter calibration workflow
+
+Use the replay/sweep utility to evaluate strategy parameters on historical data while reusing `StrategyStateMachine` logic.
+
+```bash
+python -m strategy.parameter_eval   --replay-csv data/replay.csv   --markets-json data/markets.json   --grid-json '{"watch_return_threshold":[0.003,0.005],"hammer_secs":[10,15,20],"d_min":[3,5],"max_entry_price":[0.9,0.95],"fee_bps":[8,10]}'   --output-prefix reports/calibration/latest
+```
+
+The utility exports:
+- `reports/calibration/latest.csv` with per-run metrics: win rate, EV error, drawdown, trade frequency, total PnL.
+- `reports/calibration/latest.json` with full runs and robust (top-20%) parameter ranges.
+
+## Environment profiles and guardrails
+
+`Settings` now supports profile-based defaults for strategy parameters:
+- `SETTINGS_PROFILE=paper` (default)
+- `SETTINGS_PROFILE=live`
+- `SETTINGS_PROFILE=high_vol`
+- `SETTINGS_PROFILE=low_vol`
+
+You can still override individual values with env vars (`WATCH_RETURN_THRESHOLD`, `HAMMER_SECS`, etc.).
+
+Startup is rejected for unsafe parameter combos, including:
+- `MAX_ENTRY_PRICE > 0.99`
+- `MAX_ENTRY_PRICE <= 0`
+- `FEE_BPS <= 0`
+- non-positive `HAMMER_SECS`, `WATCH_RETURN_THRESHOLD`, or `D_MIN`
+
 ## Notes
 
 - Keep `DRY_RUN=true` until all connectivity and pricing checks are validated.

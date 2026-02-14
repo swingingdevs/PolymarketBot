@@ -32,14 +32,15 @@ class CLOBWebSocket:
         pong_timeout: int = 10,
         reconnect_delay_min: int = 1,
         reconnect_delay_max: int = 60,
-        book_staleness_threshold: int = 10,
+        book_staleness_threshold: float = 10,
+        stale_after_seconds: float | None = None,
     ) -> None:
         self.ws_url = ws_url
         self.ping_interval = ping_interval
         self.pong_timeout = pong_timeout
         self.reconnect_delay_min = reconnect_delay_min
         self.reconnect_delay_max = reconnect_delay_max
-        self.book_staleness_threshold = book_staleness_threshold
+        self.book_staleness_threshold = float(stale_after_seconds) if stale_after_seconds is not None else float(book_staleness_threshold)
 
     async def _heartbeat(self, ws: websockets.WebSocketClientProtocol, failed_pings: list[int]) -> None:
         while True:
@@ -56,7 +57,7 @@ class CLOBWebSocket:
 
     async def _stale_watchdog(self, last_update: list[float], token_ids: list[str], channel: str) -> None:
         last_warning_at = 0.0
-        check_interval = max(1.0, self.book_staleness_threshold / 2)
+        check_interval = max(0.01, self.book_staleness_threshold / 2)
 
         while True:
             await asyncio.sleep(check_interval)
@@ -91,7 +92,7 @@ class CLOBWebSocket:
 
                     try:
                         while True:
-                            raw = await ws.recv()
+                            raw = await ws.recv() if hasattr(ws, "recv") else await ws.__anext__()
                             data = json.loads(raw)
                             if data.get("event_type") != "book":
                                 continue
