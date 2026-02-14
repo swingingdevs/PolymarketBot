@@ -357,6 +357,7 @@ async def orchestrate() -> None:
             last_token_change_at = time.monotonic()
             logger.info(
                 "clob_token_set_changed",
+                # Keep a single canonical reason field for downstream log consumers.
                 reason=token_change_reason,
                 added_tokens=added_tokens,
                 removed_tokens=removed_tokens,
