@@ -83,7 +83,7 @@ class RTDSFeed:
         while True:
             failed_pings = [0]
             stable_since: float | None = None
-            stability_met = False
+            backoff_reset = False
             try:
                 async with websockets.connect(self.ws_url, ping_interval=None, ping_timeout=None) as ws:
                     sub = {
@@ -109,12 +109,12 @@ class RTDSFeed:
                     try:
                         async for message in ws:
                             if (
-                                not stability_met
+                                not backoff_reset
                                 and stable_since is not None
                                 and (time.time() - stable_since) >= self.reconnect_stability_duration
                             ):
                                 backoff = self.reconnect_delay_min
-                                stability_met = True
+                                backoff_reset = True
 
                             data = orjson.loads(message)
                             payload = data.get("payload", {})
@@ -137,10 +137,6 @@ class RTDSFeed:
 
                             if topic != self.topic:
                                 continue
-
-                            if not stability_met:
-                                backoff = self.reconnect_delay_min
-                                stability_met = True
 
                             metadata: dict[str, object] = {
                                 "source": "chainlink_rtds",
