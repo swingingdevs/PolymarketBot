@@ -70,6 +70,7 @@ async def orchestrate() -> None:
         pong_timeout=settings.rtds_pong_timeout,
         reconnect_delay_min=settings.rtds_reconnect_delay_min,
         reconnect_delay_max=settings.rtds_reconnect_delay_max,
+        book_staleness_threshold=settings.clob_book_staleness_threshold,
     )
 
     async def process_price(ts: float, px: float, metadata: dict[str, object]) -> None:

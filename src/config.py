@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     rtds_reconnect_delay_min: int = 1
     rtds_reconnect_delay_max: int = 60
     price_staleness_threshold: int = 10
+    clob_book_staleness_threshold: int = 10
     chainlink_direct_api_url: str = "https://api.chain.link/streams/btc-usd"
     use_fallback_feed: bool = True
 
