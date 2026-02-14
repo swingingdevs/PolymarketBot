@@ -16,8 +16,7 @@ class FeedSample:
 class QuorumDecision:
     trading_allowed: bool
     reason_codes: list[str]
-    chainlink_stale: bool
-    spot_quorum_divergence_pct: float | None
+    divergence_pct: float | None
     feed_lag_seconds: dict[str, float]
     divergence_data_available: bool
 
@@ -26,8 +25,8 @@ class QuorumHealth:
     def __init__(
         self,
         *,
-        chainlink_max_lag_seconds: float = 5.0,
-        spot_max_lag_seconds: float = 5.0,
+        chainlink_max_lag_seconds: float = 2.5,
+        spot_max_lag_seconds: float = 2.5,
         divergence_threshold_pct: float = 0.5,
         divergence_sustain_seconds: float = 5.0,
         min_spot_sources: int = 2,
@@ -37,10 +36,13 @@ class QuorumHealth:
         self.divergence_threshold_pct = divergence_threshold_pct
         self.divergence_sustain_seconds = divergence_sustain_seconds
         self.min_spot_sources = min_spot_sources
+        self.recovery_window_seconds = divergence_sustain_seconds * 2.0
 
         self.chainlink_sample: FeedSample | None = None
         self.spot_samples: dict[str, FeedSample] = {}
         self._divergence_started_at: float | None = None
+        self._divergence_cleared_at: float | None = None
+        self._divergence_blocked = False
 
     def update_chainlink(self, *, price: float, payload_ts: float, received_ts: float | None = None) -> None:
         self.chainlink_sample = FeedSample(price=price, payload_ts=payload_ts, received_ts=received_ts or time.time())
@@ -59,8 +61,7 @@ class QuorumHealth:
 
         chainlink_lag = max(0.0, current - self.chainlink_sample.payload_ts)
         lag_seconds["chainlink"] = chainlink_lag
-        chainlink_stale = chainlink_lag > self.chainlink_max_lag_seconds
-        if chainlink_stale:
+        if chainlink_lag > self.chainlink_max_lag_seconds:
             reasons.append("CHAINLINK_STALE")
 
         fresh_spot_prices: list[float] = []
@@ -70,6 +71,7 @@ class QuorumHealth:
             if feed_lag <= self.spot_max_lag_seconds:
                 fresh_spot_prices.append(sample.price)
 
+        divergence_pct: float | None = None
         if len(fresh_spot_prices) < self.min_spot_sources:
             reasons.append("SPOT_QUORUM_UNAVAILABLE")
             reasons.append("DIVERGENCE_DATA_MISSING")
@@ -78,13 +80,23 @@ class QuorumHealth:
         spot_median = float(median(fresh_spot_prices))
         divergence_pct = abs((self.chainlink_sample.price - spot_median) / self.chainlink_sample.price) * 100.0
 
-        if divergence_pct >= self.divergence_threshold_pct:
+        if divergence_pct > self.divergence_threshold_pct:
+            self._divergence_cleared_at = None
             if self._divergence_started_at is None:
                 self._divergence_started_at = current
-            elif (current - self._divergence_started_at) >= self.divergence_sustain_seconds:
-                reasons.append("SPOT_DIVERGENCE_SUSTAINED")
+            if (current - self._divergence_started_at) >= self.divergence_sustain_seconds:
+                self._divergence_blocked = True
         else:
             self._divergence_started_at = None
+            if self._divergence_blocked:
+                if self._divergence_cleared_at is None:
+                    self._divergence_cleared_at = current
+                elif (current - self._divergence_cleared_at) >= self.recovery_window_seconds:
+                    self._divergence_blocked = False
+                    self._divergence_cleared_at = None
+
+        if self._divergence_blocked:
+            reasons.append("SPOT_DIVERGENCE_SUSTAINED")
 
         trading_allowed = len(reasons) == 0
         return QuorumDecision(trading_allowed, reasons, chainlink_stale, divergence_pct, lag_seconds, True)

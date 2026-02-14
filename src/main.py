@@ -381,6 +381,10 @@ async def orchestrate() -> None:
             strategy.disable_watch_mode(int(ts))
             logger.warning("watch_mode_blocked_by_quorum", reason_codes=decision.reason_codes)
 
+        if strategy.watch_mode and not decision.trading_allowed:
+            strategy._set_watch_mode(False, int(ts))
+            logger.warning("watch_mode_exited_by_quorum", reason_codes=decision.reason_codes)
+
         now = int(ts)
         if (now // 60) != (last_refresh_ts // 60):
             await refresh_markets(now)
@@ -408,7 +412,7 @@ async def orchestrate() -> None:
                     "order_blocked_by_quorum_health",
                     token_id=best.token_id,
                     reason_codes=decision.reason_codes,
-                    divergence_pct=decision.spot_quorum_divergence_pct,
+                    divergence_pct=decision.divergence_pct,
                 )
                 return
 
