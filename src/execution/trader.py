@@ -146,6 +146,21 @@ class Trader:
         self._persist_risk_state()
         self._update_risk_metrics(risk_blocked=self._risk_blocked(0.0))
 
+    @staticmethod
+    def _classify_submit_exception(exc: Exception) -> str:
+        text = str(exc).lower()
+        name = exc.__class__.__name__.lower()
+
+        if isinstance(exc, (TimeoutError, asyncio.TimeoutError)) or "timeout" in text or "timeout" in name:
+            return "timeout"
+        if any(k in text for k in ("401", "403", "unauthorized", "forbidden", "invalid api", "auth")):
+            return "auth"
+        if any(k in name for k in ("connection", "network", "socket")):
+            return "network"
+        if any(k in text for k in ("connection", "network", "dns", "socket", "refused", "unreachable")):
+            return "network"
+        return "error"
+
     async def buy_fok(self, token_id: str, ask: float, horizon: str) -> bool:
         size = self.settings.quote_size_usd / ask
         size = round_size_to_step(size, 0.1)
@@ -179,7 +194,34 @@ class Trader:
             return False
 
         args = OrderArgs(price=px, size=size, side="BUY", token_id=token_id, time_in_force="FOK")
-        resp = self.client.create_and_post_order(args)
+        try:
+            resp = await asyncio.wait_for(
+                asyncio.to_thread(self.client.create_and_post_order, args),
+                timeout=self.settings.order_submit_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "order_submit_timeout",
+                token_id=token_id,
+                ask=px,
+                size=size,
+                timeout_seconds=self.settings.order_submit_timeout_seconds,
+            )
+            TRADES.labels(status="timeout", side="buy", horizon=horizon).inc()
+            return False
+        except Exception as exc:
+            failure_type = self._classify_submit_exception(exc)
+            logger.warning(
+                "order_submit_failed",
+                token_id=token_id,
+                ask=px,
+                size=size,
+                failure_type=failure_type,
+                error=str(exc),
+            )
+            TRADES.labels(status=failure_type, side="buy", horizon=horizon).inc()
+            return False
+
         ok = bool(resp)
         if ok:
             self.risk.trades_this_hour += 1
