@@ -18,7 +18,16 @@ from markets.fee_rate_cache import FeeRateCache
 from markets.gamma_cache import GammaCache, UpDownMarket
 from markets.token_metadata_cache import TokenMetadataCache
 from ops.recorder import EventRecorder
-from metrics import HAMMER_ATTEMPTED, HAMMER_FILLED, KILL_SWITCH_ACTIVE, STALE_FEED, start_metrics_server
+from metrics import (
+    FEED_LAG_SECONDS,
+    HAMMER_ATTEMPTED,
+    HAMMER_FILLED,
+    KILL_SWITCH_ACTIVE,
+    ORACLE_SPOT_DIVERGENCE_PCT,
+    STALE_FEED,
+    TRADING_ALLOWED,
+    start_metrics_server,
+)
 from strategy.calibration import load_probability_calibrator
 from strategy.quorum_health import QuorumDecision, QuorumHealth
 from strategy.state_machine import StrategyStateMachine
