@@ -12,7 +12,7 @@ from execution.trader import Trader
 from markets.token_metadata_cache import TokenMetadata, TokenMetadataCache
 from feeds import clob_ws
 from feeds.clob_ws import BookTop, CLOBWebSocket
-from main import stream_clob_with_resubscribe, stream_prices_with_fallback
+from main import stream_clob_with_resubscribe, stream_prices_with_fallback, update_divergence_kill_switch
 
 
 class FakeFeed:
@@ -34,6 +34,56 @@ async def _collect_n(aiter, n: int):
         if len(out) >= n:
             break
     return out
+
+
+def test_kill_switch_does_not_progress_when_divergence_missing_or_stale() -> None:
+    settings = Settings(divergence_threshold_pct=0.5, divergence_sustain_seconds=5, rtds_spot_max_age_seconds=2.0)
+    kill_switch_state: dict[str, object] = {
+        "breach_started_at": None,
+        "active": False,
+        "last_divergence_pct": None,
+    }
+
+    update_divergence_kill_switch(
+        ts=100.0,
+        metadata={"divergence_pct": 1.0, "spot_price": 50000.0},
+        kill_switch_state=kill_switch_state,
+        settings=settings,
+    )
+    assert kill_switch_state["breach_started_at"] == 100.0
+    assert kill_switch_state["active"] is False
+
+    update_divergence_kill_switch(
+        ts=104.0,
+        metadata={},
+        kill_switch_state=kill_switch_state,
+        settings=settings,
+    )
+    assert kill_switch_state["breach_started_at"] is None
+    assert kill_switch_state["active"] is False
+
+    update_divergence_kill_switch(
+        ts=105.0,
+        metadata={"divergence_pct": 1.0, "spot_price": 50010.0},
+        kill_switch_state=kill_switch_state,
+        settings=settings,
+    )
+    assert kill_switch_state["breach_started_at"] == 105.0
+
+    update_divergence_kill_switch(
+        ts=109.0,
+        metadata={},
+        kill_switch_state=kill_switch_state,
+        settings=settings,
+    )
+    update_divergence_kill_switch(
+        ts=110.1,
+        metadata={"divergence_pct": 1.0, "spot_price": 50020.0},
+        kill_switch_state=kill_switch_state,
+        settings=settings,
+    )
+    assert kill_switch_state["active"] is False
+    assert kill_switch_state["breach_started_at"] == 110.1
 
 
 def test_rtds_staleness_triggers_fallback_then_recovers() -> None:

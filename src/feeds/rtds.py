@@ -20,20 +20,26 @@ class RTDSFeed:
         ws_url: str,
         symbol: str = "btc/usd",
         topic: str = "crypto_prices_chainlink",
+        spot_topic: str = "crypto_prices",
+        spot_max_age_seconds: float = 2.0,
         ping_interval: int = 30,
         pong_timeout: int = 10,
         reconnect_delay_min: int = 1,
         reconnect_delay_max: int = 60,
+        reconnect_stability_duration: float = 5.0,
         price_staleness_threshold: int = 10,
         log_price_comparison: bool = True,
     ) -> None:
         self.ws_url = ws_url
         self.symbol = symbol
         self.topic = topic
+        self.spot_topic = spot_topic
+        self.spot_max_age_seconds = spot_max_age_seconds
         self.ping_interval = ping_interval
         self.pong_timeout = pong_timeout
         self.reconnect_delay_min = reconnect_delay_min
         self.reconnect_delay_max = reconnect_delay_max
+        self.reconnect_stability_duration = reconnect_stability_duration
         self.price_staleness_threshold = price_staleness_threshold
         self.log_price_comparison = log_price_comparison
 
@@ -59,10 +65,11 @@ class RTDSFeed:
         normalized_symbol = self.symbol.lower()
 
         backoff = self.reconnect_delay_min
-        stable_since: float | None = None
 
         while True:
             failed_pings = [0]
+            stable_since: float | None = None
+            stability_met = False
             try:
                 async with websockets.connect(self.ws_url, ping_interval=None, ping_timeout=None) as ws:
                     sub = {
@@ -72,7 +79,12 @@ class RTDSFeed:
                                 "topic": self.topic,
                                 "type": "*",
                                 "filters": json.dumps({"symbol": normalized_symbol}),
-                            }
+                            },
+                            {
+                                "topic": self.spot_topic,
+                                "type": "*",
+                                "filters": json.dumps({"symbol": normalized_symbol}),
+                            },
                         ],
                     }
                     await ws.send(json.dumps(sub))
@@ -82,6 +94,14 @@ class RTDSFeed:
 
                     try:
                         async for message in ws:
+                            if (
+                                not stability_met
+                                and stable_since is not None
+                                and (time.time() - stable_since) >= self.reconnect_stability_duration
+                            ):
+                                backoff = self.reconnect_delay_min
+                                stability_met = True
+
                             data = json.loads(message)
                             payload = data.get("payload", {})
                             payload_symbol = str(payload.get("symbol", "")).lower()
@@ -104,6 +124,10 @@ class RTDSFeed:
                             if topic != self.topic:
                                 continue
 
+                            if not stability_met:
+                                backoff = self.reconnect_delay_min
+                                stability_met = True
+
                             metadata: dict[str, object] = {
                                 "source": "chainlink_rtds",
                                 "topic": topic,
@@ -111,8 +135,8 @@ class RTDSFeed:
                                 "received_ts": time.time(),
                                 "timestamp": price_ts,
                             }
-                            spot_latest = self._latest_by_topic_symbol.get(("crypto_prices", payload_symbol))
-                            if spot_latest is not None:
+                            spot_latest = self._latest_by_topic_symbol.get((self.spot_topic, payload_symbol))
+                            if spot_latest is not None and (price_ts - spot_latest[1]) <= self.spot_max_age_seconds:
                                 metadata["spot_price"] = spot_latest[0]
                                 metadata["divergence_pct"] = compare_feeds(price, spot_latest[0])
 

@@ -1,3 +1,4 @@
+import pytest
 from markets.gamma_cache import UpDownMarket
 from markets.token_metadata_cache import TokenMetadata, TokenMetadataCache
 from strategy.state_machine import StrategyStateMachine
@@ -97,7 +98,7 @@ def test_depth_penalty_scales_with_displayed_size_shortfall() -> None:
 
 def test_candidate_ev_uses_token_fee_rate_with_global_fallback() -> None:
     cache = TokenMetadataCache(ttl_seconds=300)
-    cache.put("u5", TokenMetadata(tick_size=0.01, fee_rate_bps=25))
+    cache.put("u5", TokenMetadata(tick_size=0.01, fee_rate_bps=40))
 
     sm = StrategyStateMachine(
         0.005,
@@ -117,5 +118,57 @@ def test_candidate_ev_uses_token_fee_rate_with_global_fallback() -> None:
 
     assert with_token_fee is not None
     assert with_fallback_fee is not None
-    assert with_token_fee.fee_cost == 0.0025
+    assert with_token_fee.fee_cost == 0.0016
     assert with_fallback_fee.fee_cost == 0.001
+
+
+def test_candidate_ev_fee_is_price_dependent_for_fee_enabled_markets() -> None:
+    cache = TokenMetadataCache(ttl_seconds=300)
+    cache.put("u5", TokenMetadata(fee_rate_bps=100))
+
+    sm = StrategyStateMachine(
+        0.005,
+        hammer_secs=15,
+        d_min=1.0,
+        max_entry_price=0.99,
+        fee_bps=10,
+        token_metadata_cache=cache,
+    )
+
+    t0 = 1_710_000_000
+    _seed_state(sm, t0)
+    m5 = UpDownMarket("m5", t0 - 285, t0 + 15, "u5", "d5", 5)
+
+    low_price = sm._candidate_ev(m5, "UP", ask=0.1, bid=0.09, ask_size=3.0, fill_prob=1.0, token_id="u5")
+    mid_price = sm._candidate_ev(m5, "UP", ask=0.5, bid=0.49, ask_size=3.0, fill_prob=1.0, token_id="u5")
+
+    assert low_price is not None
+    assert mid_price is not None
+    assert low_price.fee_cost == 0.001
+    assert mid_price.fee_cost == 0.005
+    assert mid_price.fee_cost > low_price.fee_cost
+
+
+def test_candidate_ev_fee_is_symmetric_at_complementary_prices() -> None:
+    cache = TokenMetadataCache(ttl_seconds=300)
+    cache.put_many({"u5": TokenMetadata(fee_rate_bps=100), "d5": TokenMetadata(fee_rate_bps=100)})
+
+    sm = StrategyStateMachine(
+        0.005,
+        hammer_secs=15,
+        d_min=1.0,
+        max_entry_price=0.99,
+        fee_bps=10,
+        token_metadata_cache=cache,
+    )
+
+    t0 = 1_710_000_000
+    _seed_state(sm, t0)
+    m5 = UpDownMarket("m5", t0 - 285, t0 + 15, "u5", "d5", 5)
+
+    up_candidate = sm._candidate_ev(m5, "UP", ask=0.2, bid=0.19, ask_size=3.0, fill_prob=1.0, token_id="u5")
+    down_candidate = sm._candidate_ev(m5, "DOWN", ask=0.8, bid=0.79, ask_size=3.0, fill_prob=1.0, token_id="d5")
+
+    assert up_candidate is not None
+    assert down_candidate is not None
+    assert up_candidate.fee_cost == pytest.approx(down_candidate.fee_cost)

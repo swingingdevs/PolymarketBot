@@ -10,6 +10,7 @@ from markets.gamma_cache import UpDownMarket
 from markets.token_metadata_cache import TokenMetadataCache
 from metrics import CURRENT_EV, REJECTED_MAX_ENTRY_PRICE, STALE_FEED, WATCH_EVENTS, WATCH_TRIGGERED
 from strategy.calibration import CalibrationInput, IdentityCalibrator, ProbabilityCalibrator
+from utils.fees import fee_cost_per_share_quote_equivalent
 from utils.price_validation import is_price_stale, validate_price_source
 
 logger = structlog.get_logger(__name__)
@@ -52,8 +53,7 @@ class StrategyStateMachine:
         d_min: float,
         max_entry_price: float,
         fee_bps: float,
-        expected_notional_usd: float = 20.0,
-        depth_penalty_coeff: float = 1.0,
+        price_stale_after_seconds: float = 2.0,
         probability_calibrator: ProbabilityCalibrator | None = None,
         calibration_input: CalibrationInput = "p_hat",
         token_metadata_cache: TokenMetadataCache | None = None,
@@ -66,8 +66,7 @@ class StrategyStateMachine:
         self.d_min = d_min
         self.max_entry_price = max_entry_price
         self.fee_bps = fee_bps
-        self.expected_notional_usd = max(0.0, expected_notional_usd)
-        self.depth_penalty_coeff = max(0.0, depth_penalty_coeff)
+        self.price_stale_after_seconds = price_stale_after_seconds
         self.probability_calibrator = probability_calibrator or IdentityCalibrator()
         self.calibration_input = calibration_input
         self.token_metadata_cache = token_metadata_cache
@@ -151,7 +150,9 @@ class StrategyStateMachine:
         if not validate_price_source(metadata):
             logger.warning("invalid_price_source", metadata=metadata)
             return
-        if is_price_stale(float(metadata.get("timestamp", ts)), stale_after_seconds=2.0):
+        if is_price_stale(
+            float(metadata.get("timestamp", ts)), stale_after_seconds=self.price_stale_after_seconds
+        ):
             logger.warning("stale_price_update", timestamp=metadata.get("timestamp", ts))
             STALE_FEED.inc()
 
@@ -297,10 +298,20 @@ class StrategyStateMachine:
         else:
             p_hat = self.probability_calibrator.calibrate(raw_p_hat)
 
-        fee_bps = self.fee_bps
+        fee_bps: float | None = None
         if token_id and self.token_metadata_cache is not None:
-            fee_bps = self.token_metadata_cache.get_fee_rate_bps(token_id, fallback_fee_bps=self.fee_bps)
-        fee_cost = fee_bps / 10000.0
+            metadata = self.token_metadata_cache.get(token_id, allow_stale=True)
+            if metadata and metadata.fee_rate_bps is not None and metadata.fee_rate_bps >= 0:
+                fee_bps = metadata.fee_rate_bps
+        if fee_bps is None and token_id:
+            market_metadata = market.token_metadata_by_id.get(token_id)
+            if market_metadata and market_metadata.fee_rate_bps is not None and market_metadata.fee_rate_bps >= 0:
+                fee_bps = market_metadata.fee_rate_bps
+
+        if fee_bps is None:
+            fee_cost = self.fee_bps / 10000.0
+        else:
+            fee_cost = fee_cost_per_share_quote_equivalent(base_rate_bps=fee_bps, price=ask, side="BUY")
         spread = max(0.0, ask - bid) if bid is not None else 0.0
         spread_penalty = 0.5 * spread
         desired_size = expected_size if expected_size is not None else (self.expected_notional_usd / ask)

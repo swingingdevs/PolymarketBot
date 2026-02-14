@@ -1,0 +1,9 @@
+{
+  "event_type": "snapshot",
+  "asset_id": "token-a",
+  "book": {
+    "bids": [["0.44", "12"]],
+    "asks": [["0.45", "8"]]
+  },
+  "timestamp": 1712345678000
+}

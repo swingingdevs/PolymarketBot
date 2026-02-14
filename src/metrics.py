@@ -32,6 +32,11 @@ REJECTED_MAX_ENTRY_PRICE = Counter(
 )
 STALE_FEED = Counter("bot_stale_feed_total", "Number of stale feed/staleness events detected")
 TRADES = Counter("bot_trades_total", "Trades placed", ["status", "side", "horizon"])
+CLOB_DROPPED_MESSAGES = Counter(
+    "bot_clob_dropped_messages_total",
+    "Number of CLOB websocket payloads dropped during parsing",
+    ["reason", "event_type"],
+)
 CURRENT_EV = Gauge("bot_current_best_ev", "Best EV at decision point")
 DAILY_REALIZED_PNL = Gauge("bot_daily_realized_pnl_usd", "Daily realized PnL in USD")
 RISK_LIMIT_BLOCKED = Gauge("bot_risk_limit_blocked", "1 if trading is blocked by risk limits")

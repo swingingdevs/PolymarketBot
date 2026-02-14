@@ -1,0 +1,12 @@
+{
+  "event_type": "price_update",
+  "asset_id": "token-b",
+  "changes": [
+    {
+      "token_id": "token-b",
+      "bids": [["0.52", "3"]],
+      "asks": [["0.53", "4"]],
+      "timestamp": 1712345680000
+    }
+  ]
+}

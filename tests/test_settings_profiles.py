@@ -55,3 +55,9 @@ def test_unsafe_configuration_rejected() -> None:
 def test_zero_fee_bps_is_allowed() -> None:
     settings = Settings(fee_bps=0)
     assert settings.fee_bps == 0
+
+
+def test_price_stale_after_seconds_can_be_configured_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PRICE_STALE_AFTER_SECONDS", "9.25")
+    settings = Settings()
+    assert settings.price_stale_after_seconds == 9.25
