@@ -5,11 +5,13 @@ import contextlib
 import json
 import time
 from dataclasses import dataclass
+from urllib.parse import urlparse
 from typing import AsyncIterator
 
 import structlog
 import websockets
 
+from metrics import CLOB_DROPPED_MESSAGES
 from utils.time import normalize_ts
 
 logger = structlog.get_logger(__name__)
@@ -45,7 +47,7 @@ class CLOBWebSocket:
         stale_after_seconds: float | None = None,
     ) -> None:
         self.ws_base = ws_base.rstrip("/")
-        self.ws_url = f"{self.ws_base}/ws/market"
+        self.ws_url = self._build_ws_url(self.ws_base)
         self.ping_interval = ping_interval
         self.pong_timeout = pong_timeout
         self.reconnect_delay_min = reconnect_delay_min
@@ -54,6 +56,16 @@ class CLOBWebSocket:
         self.token_metadata_cache: dict[str, TokenConstraints] = {}
         self._ws: websockets.WebSocketClientProtocol | None = None
         self._subscribed_token_ids: set[str] = set()
+
+    @staticmethod
+    def _build_ws_url(ws_base: str) -> str:
+        parsed = urlparse(ws_base)
+        path = parsed.path.rstrip("/")
+        if path.endswith("/ws/market"):
+            final_path = path
+        else:
+            final_path = f"{path}/ws/market" if path else "/ws/market"
+        return parsed._replace(path=final_path).geturl()
 
     @staticmethod
     def _coerce_positive_float(value: object) -> float | None:
@@ -132,15 +144,156 @@ class CLOBWebSocket:
 
     @staticmethod
     def _extract_price_size(levels: object) -> tuple[float | None, float | None]:
+        if isinstance(levels, dict):
+            try:
+                return float(levels.get("price")), float(levels.get("size"))
+            except (TypeError, ValueError):
+                return None, None
+
         if not isinstance(levels, list) or not levels:
             return None, None
         top = levels[0]
+
+        if isinstance(top, (list, tuple)) and len(top) >= 2:
+            try:
+                return float(top[0]), float(top[1])
+            except (TypeError, ValueError):
+                return None, None
+
         if not isinstance(top, dict):
             return None, None
         try:
             return float(top.get("price")), float(top.get("size"))
         except (TypeError, ValueError):
             return None, None
+
+    @staticmethod
+    def _event_type(event: dict[str, object]) -> str:
+        raw = event.get("event_type") or event.get("type")
+        return str(raw) if raw is not None else "unknown"
+
+    def _drop_message(self, reason: str, *, event_type: str, event: object = None) -> None:
+        CLOB_DROPPED_MESSAGES.labels(reason=reason, event_type=event_type).inc()
+        warning_payload: dict[str, object] = {"reason": reason, "event_type": event_type}
+        if isinstance(event, dict):
+            warning_payload["keys"] = sorted(event.keys())
+        logger.warning("clob_message_dropped", **warning_payload)
+
+    def _extract_book_levels(self, event: dict[str, object]) -> tuple[object, object]:
+        payload = event.get("book")
+        source = payload if isinstance(payload, dict) else event
+        bids = source.get("bids") if isinstance(source, dict) else None
+        asks = source.get("asks") if isinstance(source, dict) else None
+        if bids is None:
+            bids = source.get("buys") if isinstance(source, dict) else None
+        if asks is None:
+            asks = source.get("sells") if isinstance(source, dict) else None
+        return bids, asks
+
+    def _parse_event(self, event: dict[str, object], last_update: list[float]) -> list[BookTop]:
+        tops: list[BookTop] = []
+        event_type = self._event_type(event)
+        token_id = str(event.get("asset_id") or event.get("token_id") or "")
+
+        if event_type == "tick_size_change":
+            self._update_token_constraints(token_id, tick_size=event.get("new_tick_size", event.get("tick_size")))
+            return tops
+
+        if event_type in {"book", "snapshot", "book_snapshot", "price_snapshot"}:
+            bids, asks = self._extract_book_levels(event)
+            bid, bid_size = self._extract_price_size(bids)
+            ask, ask_size = self._extract_price_size(asks)
+            if bid is None and ask is None:
+                self._drop_message("snapshot_missing_top_of_book", event_type=event_type, event=event)
+                return tops
+            fill_prob = event.get("fill_prob")
+            if fill_prob is not None:
+                fill_prob = float(fill_prob)
+            ts = normalize_ts(event.get("timestamp", time.time()))
+            last_update[0] = time.time()
+            tops.append(
+                BookTop(
+                    token_id=token_id,
+                    best_bid=bid,
+                    best_ask=ask,
+                    best_bid_size=bid_size,
+                    best_ask_size=ask_size,
+                    fill_prob=fill_prob,
+                    ts=ts,
+                )
+            )
+            return tops
+
+        if event_type in {"price_change", "update", "book_update", "price_update"}:
+            changes = event.get("changes")
+            if isinstance(changes, dict):
+                changes = [changes]
+            if changes is None:
+                changes = [event]
+            if not isinstance(changes, list):
+                self._drop_message("update_changes_not_list", event_type=event_type, event=event)
+                return tops
+
+            outer_ts = event.get("timestamp", time.time())
+            for change in changes:
+                if not isinstance(change, dict):
+                    self._drop_message("change_not_object", event_type=event_type, event=event)
+                    continue
+
+                change_token = str(change.get("asset_id") or change.get("token_id") or token_id)
+                bid = self._coerce_positive_float(change.get("best_bid"))
+                ask = self._coerce_positive_float(change.get("best_ask"))
+                bid_size = self._coerce_positive_float(change.get("best_bid_size"))
+                ask_size = self._coerce_positive_float(change.get("best_ask_size"))
+
+                if bid is None and ask is None:
+                    change_bids, change_asks = self._extract_book_levels(change)
+                    bid, bid_size = self._extract_price_size(change_bids)
+                    ask, ask_size = self._extract_price_size(change_asks)
+
+                if bid is None and ask is None:
+                    self._drop_message("update_missing_top_of_book", event_type=event_type, event=change)
+                    continue
+
+                ts = normalize_ts(change.get("timestamp", outer_ts))
+                last_update[0] = time.time()
+                tops.append(
+                    BookTop(
+                        token_id=change_token,
+                        best_bid=bid,
+                        best_ask=ask,
+                        best_bid_size=bid_size,
+                        best_ask_size=ask_size,
+                        ts=ts,
+                    )
+                )
+            return tops
+
+        self._drop_message("unrecognized_event_type", event_type=event_type, event=event)
+        return tops
+
+    def _parse_raw_message(self, raw: str, last_update: list[float]) -> list[BookTop]:
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            self._drop_message("invalid_json", event_type="invalid_json")
+            return []
+
+        if isinstance(data, list):
+            events = [e for e in data if isinstance(e, dict)]
+            if not events:
+                self._drop_message("message_without_event_objects", event_type="batch")
+                return []
+        elif isinstance(data, dict):
+            events = [data]
+        else:
+            self._drop_message("message_not_object_or_array", event_type=type(data).__name__)
+            return []
+
+        tops: list[BookTop] = []
+        for event in events:
+            tops.extend(self._parse_event(event, last_update))
+        return tops
 
     async def update_subscriptions(self, token_ids: list[str]) -> None:
         if self._ws is None:
@@ -170,71 +323,8 @@ class CLOBWebSocket:
                     try:
                         while True:
                             raw = await ws.recv() if hasattr(ws, "recv") else await ws.__anext__()
-                            data = json.loads(raw)
-                            if isinstance(data, list):
-                                events = [e for e in data if isinstance(e, dict)]
-                            elif isinstance(data, dict):
-                                events = [data]
-                            else:
-                                continue
-
-                            for event in events:
-                                token_id = str(event.get("asset_id") or event.get("token_id") or "")
-                                if event.get("event_type") == "tick_size_change":
-                                    self._update_token_constraints(token_id, tick_size=event.get("new_tick_size", event.get("tick_size")))
-                                    continue
-
-                                if event.get("event_type") == "book":
-                                    bids = event.get("bids", [])
-                                    asks = event.get("asks", [])
-                                    bid, bid_size = self._extract_price_size(bids)
-                                    ask, ask_size = self._extract_price_size(asks)
-                                    fill_prob = event.get("fill_prob")
-                                    if fill_prob is not None:
-                                        fill_prob = float(fill_prob)
-                                    ts = normalize_ts(event.get("timestamp", time.time()))
-                                    last_update[0] = time.time()
-                                    yield BookTop(
-                                        token_id=token_id,
-                                        best_bid=bid,
-                                        best_ask=ask,
-                                        best_bid_size=bid_size,
-                                        best_ask_size=ask_size,
-                                        fill_prob=fill_prob,
-                                        ts=ts,
-                                    )
-                                    continue
-
-                                if event.get("event_type") != "price_change":
-                                    continue
-
-                                changes = event.get("changes")
-                                if isinstance(changes, dict):
-                                    changes = [changes]
-                                if not isinstance(changes, list):
-                                    continue
-
-                                outer_ts = event.get("timestamp", time.time())
-                                for change in changes:
-                                    if not isinstance(change, dict):
-                                        continue
-                                    change_token = str(change.get("asset_id") or change.get("token_id") or token_id)
-                                    bid = self._coerce_positive_float(change.get("best_bid"))
-                                    ask = self._coerce_positive_float(change.get("best_ask"))
-                                    bid_size = self._coerce_positive_float(change.get("best_bid_size"))
-                                    ask_size = self._coerce_positive_float(change.get("best_ask_size"))
-                                    if bid is None and ask is None:
-                                        continue
-                                    ts = normalize_ts(change.get("timestamp", outer_ts))
-                                    last_update[0] = time.time()
-                                    yield BookTop(
-                                        token_id=change_token,
-                                        best_bid=bid,
-                                        best_ask=ask,
-                                        best_bid_size=bid_size,
-                                        best_ask_size=ask_size,
-                                        ts=ts,
-                                    )
+                            for top in self._parse_raw_message(raw, last_update):
+                                yield top
 
                             backoff = self.reconnect_delay_min
                     finally:
