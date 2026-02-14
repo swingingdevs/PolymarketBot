@@ -174,6 +174,8 @@ class Settings(BaseSettings):
 
     quote_size_usd: float = 20.0
     order_submit_timeout_seconds: float = 5.0
+    batch_orders_enabled: bool = False
+    batch_order_max_size: int = Field(default=15, ge=1, le=15)
     metrics_host: str = "0.0.0.0"
     metrics_port: int = 9102
     token_metadata_ttl_seconds: float = 300.0

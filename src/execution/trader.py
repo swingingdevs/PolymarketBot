@@ -16,7 +16,18 @@ from config import Settings
 from execution.order_builder import OrderBuilder, configure_fee_rate_fetcher
 from markets.token_metadata_cache import TokenMetadataCache
 from auth.credentials import CredentialValidationError, init_client
-from metrics import BOT_API_CREDS_AGE_SECONDS, DAILY_REALIZED_PNL, RISK_LIMIT_BLOCKED, TRADES
+from metrics import (
+    BOT_API_CREDS_AGE_SECONDS,
+    DAILY_REALIZED_PNL,
+    MAX_DAILY_LOSS_PCT_CONFIGURED,
+    MAX_DAILY_LOSS_USD_CONFIGURED,
+    MAX_OPEN_EXPOSURE_PER_MARKET_PCT_CONFIGURED,
+    MAX_OPEN_EXPOSURE_PER_MARKET_USD_CONFIGURED,
+    MAX_TOTAL_OPEN_EXPOSURE_PCT_CONFIGURED,
+    MAX_TOTAL_OPEN_EXPOSURE_USD_CONFIGURED,
+    RISK_LIMIT_BLOCKED,
+    TRADES,
+)
 from utils.rounding import round_price_up_to_tick, round_size_to_step
 
 logger = structlog.get_logger(__name__)
@@ -61,6 +72,32 @@ class EffectiveRiskCaps:
     daily_loss_cap_usd: float
     exposure_per_market_cap_usd: float
     total_exposure_cap_usd: float
+
+
+@dataclass(slots=True)
+class BatchOrderLeg:
+    token_id: str
+    price: float
+    size: float
+    side: str = "BUY"
+    time_in_force: str = "FOK"
+
+
+@dataclass(slots=True)
+class BatchOrderResult:
+    index: int
+    token_id: str
+    ok: bool
+    response: Any = None
+    error: str | None = None
+
+
+@dataclass(slots=True)
+class BatchSubmitResult:
+    ok: bool
+    atomic: bool
+    used_batch_endpoint: bool
+    results: list[BatchOrderResult]
 
 
 class Trader:
@@ -820,6 +857,130 @@ class Trader:
                 return self.client.post_order(limit_order)
 
         raise RuntimeError("unsupported_order_submission_api")
+
+    def _submit_fok_sequential(
+        self,
+        signed_orders: list[tuple[BatchOrderLeg, Any]],
+    ) -> BatchSubmitResult:
+        assert self.client is not None
+        results: list[BatchOrderResult] = []
+        for idx, (leg, signed_order) in enumerate(signed_orders):
+            try:
+                try:
+                    response = self.client.post_order(signed_order, time_in_force=leg.time_in_force)
+                except TypeError:
+                    response = self.client.post_order(signed_order)
+            except Exception as exc:
+                results.append(BatchOrderResult(index=idx, token_id=leg.token_id, ok=False, error=str(exc)))
+            else:
+                results.append(BatchOrderResult(index=idx, token_id=leg.token_id, ok=bool(response), response=response))
+        return BatchSubmitResult(
+            ok=all(result.ok for result in results),
+            atomic=False,
+            used_batch_endpoint=False,
+            results=results,
+        )
+
+    def _submit_live_fok_batch(self, legs: list[BatchOrderLeg], *, atomic: bool) -> BatchSubmitResult:
+        if self.client is None:
+            raise RuntimeError("missing_clob_client")
+        if len(legs) == 0:
+            return BatchSubmitResult(ok=True, atomic=atomic, used_batch_endpoint=False, results=[])
+        max_size = int(getattr(self.settings, "batch_order_max_size", 15))
+        if len(legs) > max_size:
+            raise ValueError(f"batch_order_max_size_exceeded:{len(legs)}>{max_size}")
+
+        if not bool(getattr(self.settings, "batch_orders_enabled", False)):
+            raise RuntimeError("batch_orders_disabled")
+
+        self.order_builder.clob_client = self.client
+        signed_orders: list[tuple[BatchOrderLeg, Any]] = []
+        results: list[BatchOrderResult] = []
+        for idx, leg in enumerate(legs):
+            try:
+                signed_order, used_fallback, fee_rate_bps = self.order_builder.build_signed_order(
+                    token_id=leg.token_id,
+                    price=leg.price,
+                    size=leg.size,
+                    side=leg.side,
+                    time_in_force=leg.time_in_force,
+                )
+                if used_fallback and bool(getattr(self.settings, "enable_fee_rate", True)):
+                    raise RuntimeError("fee_rate_unavailable_monitor_only")
+                logger.info("order_fee_rate", token_id=leg.token_id, fee_rate_bps=fee_rate_bps)
+            except Exception as exc:
+                results.append(BatchOrderResult(index=idx, token_id=leg.token_id, ok=False, error=str(exc)))
+                if atomic:
+                    return BatchSubmitResult(ok=False, atomic=True, used_batch_endpoint=False, results=results)
+            else:
+                signed_orders.append((leg, signed_order))
+
+        if len(results) > 0 and not atomic:
+            submitted = self._submit_fok_sequential(signed_orders)
+            return BatchSubmitResult(
+                ok=False,
+                atomic=False,
+                used_batch_endpoint=False,
+                results=results + submitted.results,
+            )
+
+        post_orders = getattr(self.client, "post_orders", None) or getattr(self.client, "post_batch_orders", None)
+        if callable(post_orders):
+            payload = [order for _, order in signed_orders]
+            kwargs = {"atomic": atomic, "time_in_force": "FOK"}
+            try:
+                try:
+                    response = post_orders(payload, **kwargs)
+                except TypeError:
+                    response = post_orders(payload)
+            except Exception as exc:
+                return BatchSubmitResult(
+                    ok=False,
+                    atomic=atomic,
+                    used_batch_endpoint=True,
+                    results=[BatchOrderResult(index=i, token_id=leg.token_id, ok=False, error=str(exc)) for i, leg in enumerate(legs)],
+                )
+
+            if isinstance(response, list):
+                mapped = [
+                    BatchOrderResult(index=i, token_id=legs[i].token_id, ok=bool(item), response=item)
+                    for i, item in enumerate(response[: len(legs)])
+                ]
+            else:
+                mapped = [BatchOrderResult(index=i, token_id=leg.token_id, ok=bool(response), response=response) for i, leg in enumerate(legs)]
+            return BatchSubmitResult(ok=all(item.ok for item in mapped), atomic=atomic, used_batch_endpoint=True, results=mapped)
+
+        if atomic:
+            return BatchSubmitResult(
+                ok=False,
+                atomic=True,
+                used_batch_endpoint=False,
+                results=[
+                    BatchOrderResult(index=i, token_id=leg.token_id, ok=False, error="atomic_batch_unsupported_by_client")
+                    for i, leg in enumerate(legs)
+                ],
+            )
+
+        return self._submit_fok_sequential(signed_orders)
+
+    async def submit_fok_batch(self, legs: list[BatchOrderLeg], *, atomic: bool = True) -> BatchSubmitResult:
+        if self.settings.dry_run:
+            return BatchSubmitResult(
+                ok=True,
+                atomic=atomic,
+                used_batch_endpoint=False,
+                results=[BatchOrderResult(index=i, token_id=leg.token_id, ok=True, response={"dry_run": True}) for i, leg in enumerate(legs)],
+            )
+
+        if self.client is None:
+            raise RuntimeError("missing_clob_client")
+        if not self._live_auth_ready:
+            raise RuntimeError("missing_clob_l2_credentials")
+
+        return await asyncio.wait_for(
+            asyncio.to_thread(self._submit_live_fok_batch, legs, atomic=atomic),
+            timeout=self.settings.order_submit_timeout_seconds,
+        )
 
     async def buy_fok(
         self,
