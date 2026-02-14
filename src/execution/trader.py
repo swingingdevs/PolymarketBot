@@ -76,6 +76,32 @@ class EffectiveRiskCaps:
     total_exposure_cap_usd: float
 
 
+@dataclass(slots=True)
+class BatchOrderLeg:
+    token_id: str
+    price: float
+    size: float
+    side: str = "BUY"
+    time_in_force: str = "FOK"
+
+
+@dataclass(slots=True)
+class BatchOrderResult:
+    index: int
+    token_id: str
+    ok: bool
+    response: Any = None
+    error: str | None = None
+
+
+@dataclass(slots=True)
+class BatchSubmitResult:
+    ok: bool
+    atomic: bool
+    used_batch_endpoint: bool
+    results: list[BatchOrderResult]
+
+
 class Trader:
     def __init__(self, settings: Settings, token_metadata_cache: TokenMetadataCache | None = None) -> None:
         self.settings = settings

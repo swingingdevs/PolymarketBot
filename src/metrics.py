@@ -68,6 +68,9 @@ MAX_TOTAL_OPEN_EXPOSURE_PCT_CONFIGURED = Gauge(
 )
 KILL_SWITCH_ACTIVE = Gauge("bot_kill_switch_active", "1 if divergence kill-switch is active")
 TRADING_ALLOWED = Gauge("bot_trading_allowed", "1 if trading is currently allowed")
+BOT_API_CREDS_AGE_SECONDS = Gauge("bot_api_creds_age_seconds", "Age of active API credentials in seconds")
+BOT_FEE_FETCH_FAILURES_TOTAL = Counter("bot_fee_fetch_failures_total", "Number of fee-rate fetch failures")
+BOT_FEE_RATE_BPS = Gauge("bot_fee_rate_bps", "Resolved fee-rate in bps", ["token_id"])
 GEOBLOCK_BLOCKED = Gauge(
     "bot_geoblock_blocked",
     "1 if the current deployment IP is geoblocked for trading",
