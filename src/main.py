@@ -9,7 +9,7 @@ import structlog
 
 from config import Settings
 from execution.trader import Trader
-from feeds.chainlink_direct import ChainlinkDirectFeed
+from feeds.chainlink_direct import SpotLivenessFallbackFeed
 from feeds.clob_ws import BookTop, CLOBWebSocket
 from feeds.coinbase_ws import CoinbaseSpotFeed
 from feeds.rtds import RTDSFeed
@@ -55,7 +55,7 @@ def current_start_epoch(ts: int, interval_seconds: int) -> int:
 
 async def stream_prices_with_fallback(
     rtds: RTDSFeed,
-    fallback: ChainlinkDirectFeed,
+    fallback: SpotLivenessFallbackFeed,
     *,
     use_fallback_feed: bool,
     price_staleness_threshold: float,
@@ -77,7 +77,7 @@ async def stream_prices_with_fallback(
             else:
                 if not use_fallback_feed:
                     continue
-                logger.warning("switching_to_chainlink_direct_fallback")
+                logger.warning("switching_to_spot_liveness_fallback", reduced_trading_confidence=True)
                 using_fallback = True
                 if fallback_task is None:
                     fallback_task = asyncio.create_task(fallback_iter.__anext__())
@@ -157,7 +157,7 @@ async def orchestrate() -> None:
         price_staleness_threshold=settings.price_staleness_threshold,
         log_price_comparison=settings.log_price_comparison,
     )
-    fallback = ChainlinkDirectFeed(settings.chainlink_direct_api_url)
+    fallback = SpotLivenessFallbackFeed(settings.chainlink_direct_api_url)
     coinbase = CoinbaseSpotFeed(
         product_id=settings.coinbase_product_id,
         public_ws_url=settings.coinbase_ws_feed_url,
@@ -358,6 +358,15 @@ async def orchestrate() -> None:
                 )
                 return
 
+            if feed_state["mode"] == "fallback" and not settings.allow_orders_while_fallback_active:
+                logger.warning(
+                    "order_blocked_while_spot_liveness_fallback_active",
+                    token_id=best.token_id,
+                    reduced_trading_confidence=True,
+                    override_flag="ALLOW_ORDERS_WHILE_FALLBACK_ACTIVE",
+                )
+                return
+
             logger.info(
                 "trade_candidate",
                 ev=best.ev,
@@ -437,11 +446,20 @@ async def orchestrate() -> None:
             if stale and settings.use_fallback_feed:
                 if feed_state["mode"] != "fallback":
                     feed_state["mode"] = "fallback"
-                    logger.warning("enter_fallback_chainlink_direct", staleness_seconds=age)
+                    logger.warning(
+                        "enter_spot_liveness_fallback_mode",
+                        staleness_seconds=age,
+                        reduced_trading_confidence=True,
+                        advisory="fallback is spot-based liveness only; not canonical for market resolution",
+                    )
                     STALE_FEED.inc()
                     fallback_task = asyncio.create_task(consume_fallback())
                 else:
-                    logger.warning("still_degraded_using_fallback", staleness_seconds=age)
+                    logger.warning(
+                        "still_degraded_using_spot_liveness_fallback",
+                        staleness_seconds=age,
+                        reduced_trading_confidence=True,
+                    )
                     STALE_FEED.inc()
                 continue
 
