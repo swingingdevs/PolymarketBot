@@ -13,6 +13,7 @@ import orjson
 import structlog
 
 from config import Settings
+from execution.order_builder import OrderBuilder, configure_fee_rate_fetcher
 from markets.token_metadata_cache import TokenMetadataCache
 from metrics import DAILY_REALIZED_PNL, RISK_LIMIT_BLOCKED, TRADES
 from utils.rounding import round_price_up_to_tick, round_size_to_step
@@ -65,12 +66,17 @@ class Trader:
         self._reset_daily_pnl_if_needed()
         self._update_risk_metrics(risk_blocked=False)
         self._live_auth_ready = False
-        self._cached_equity_usd: float = max(0.0, float(settings.equity_usd))
+        self._cached_equity_usd: float = max(0.0, float(getattr(settings, "equity_usd", 1000.0)))
         self._last_equity_refresh_ts: float = 0.0
 
         if self.risk.peak_equity_usd <= 0:
             self.risk.peak_equity_usd = self._cached_equity_usd
             self._persist_risk_state()
+
+        configure_fee_rate_fetcher(
+            base_url=settings.clob_host,
+            ttl_seconds=float(getattr(settings, "fee_rate_ttl_seconds", 60.0)),
+        )
 
         if not settings.dry_run and ClobClient is not None:
             client_kwargs: dict[str, Any] = {
@@ -87,6 +93,12 @@ class Trader:
 
             self.client = ClobClient(**client_kwargs)
             self._live_auth_ready = self._initialize_live_auth()
+
+        self.order_builder = OrderBuilder(
+            self.client,
+            enable_fee_rate=bool(getattr(settings, "enable_fee_rate", True)),
+            default_fee_rate_bps=float(getattr(settings, "default_fee_rate_bps", 0.0)),
+        )
 
     def _build_api_creds_payload(self, derived_creds: Any) -> Any:
         has_static_creds = bool(self.settings.api_key and self.settings.api_secret and self.settings.api_passphrase)
@@ -241,7 +253,7 @@ class Trader:
             return self._cached_equity_usd
 
         self._last_equity_refresh_ts = now
-        self._cached_equity_usd = max(0.0, self.settings.equity_usd + self.risk.cumulative_realized_pnl)
+        self._cached_equity_usd = max(0.0, float(getattr(self.settings, "equity_usd", 1000.0)) + self.risk.cumulative_realized_pnl)
         return self._cached_equity_usd
 
     def _cooldown_active(self) -> bool:
@@ -732,13 +744,17 @@ class Trader:
             raise RuntimeError("missing_clob_client")
 
         if hasattr(self.client, "create_limit_order") and hasattr(self.client, "post_order"):
-            limit_order = self.client.create_limit_order(
+            self.order_builder.clob_client = self.client
+            limit_order, used_fallback, fee_rate_bps = self.order_builder.build_signed_order(
+                token_id=token_id,
                 price=px,
                 size=size,
                 side="BUY",
-                token_id=token_id,
                 time_in_force="FOK",
             )
+            if used_fallback and bool(getattr(self.settings, "enable_fee_rate", True)):
+                raise RuntimeError("fee_rate_unavailable_monitor_only")
+            logger.info("order_fee_rate", token_id=token_id, fee_rate_bps=fee_rate_bps)
             try:
                 return self.client.post_order(limit_order, time_in_force="FOK")
             except TypeError:

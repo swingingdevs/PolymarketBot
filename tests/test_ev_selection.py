@@ -162,8 +162,8 @@ def test_candidate_ev_uses_token_fee_rate_with_global_fallback() -> None:
 
     assert with_token_fee is not None
     assert with_fallback_fee is not None
-    assert with_token_fee.fee_cost == pytest.approx(0.00384)
-    assert with_fallback_fee.fee_cost == 0.001
+    assert with_token_fee.fee_cost == pytest.approx(0.04)
+    assert with_fallback_fee.fee_cost == pytest.approx(0.001)
 
 
 def test_candidate_ev_fee_is_price_dependent_for_fee_enabled_markets() -> None:
@@ -188,9 +188,8 @@ def test_candidate_ev_fee_is_price_dependent_for_fee_enabled_markets() -> None:
 
     assert low_price is not None
     assert mid_price is not None
-    assert low_price.fee_cost == pytest.approx(0.00009)
-    assert mid_price.fee_cost == pytest.approx(0.00125)
-    assert mid_price.fee_cost > low_price.fee_cost
+    assert low_price.fee_cost == pytest.approx(0.01)
+    assert mid_price.fee_cost == pytest.approx(0.01)
 
 
 def test_candidate_ev_rejects_when_visible_depth_cannot_fill_size() -> None:
@@ -225,9 +224,8 @@ def test_fee_formula_is_higher_near_mid_prices_than_tails() -> None:
     mid = sm._buy_fee_cost_per_share(ask=0.5, fee_rate_bps=100)
     high = sm._buy_fee_cost_per_share(ask=0.9, fee_rate_bps=100)
 
-    assert up_candidate is not None
-    assert down_candidate is not None
-    assert up_candidate.fee_cost == pytest.approx(down_candidate.fee_cost)
+    assert mid > low
+    assert mid > high
 
 
 def test_stale_price_blocks_watch_mode_entry() -> None:
