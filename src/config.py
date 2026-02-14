@@ -85,6 +85,14 @@ class Settings(BaseSettings):
 
     dry_run: bool = True
     max_usd_per_trade: float = 50.0
+    risk_pct_per_trade: float = 0.01
+    kelly_fraction: float = 0.25
+    max_risk_pct_cap: float = 0.02
+    equity_usd: float = 1000.0
+    equity_refresh_seconds: float = 30.0
+    cooldown_consecutive_losses: int = 3
+    cooldown_drawdown_pct: float = 0.05
+    cooldown_minutes: int = 15
     max_daily_loss: float = 250.0
     max_trades_per_hour: int = 4
     max_open_exposure_per_market: float = 100.0
@@ -143,5 +151,23 @@ class Settings(BaseSettings):
             raise ValueError("Unsafe configuration: divergence_threshold_pct must be > 0")
         if self.divergence_sustain_seconds <= 0:
             raise ValueError("Unsafe configuration: divergence_sustain_seconds must be > 0")
+        if self.risk_pct_per_trade <= 0:
+            raise ValueError("Unsafe configuration: risk_pct_per_trade must be > 0")
+        if self.kelly_fraction < 0:
+            raise ValueError("Unsafe configuration: kelly_fraction must be >= 0")
+        if self.max_risk_pct_cap <= 0:
+            raise ValueError("Unsafe configuration: max_risk_pct_cap must be > 0")
+        if self.max_risk_pct_cap > 1:
+            raise ValueError("Unsafe configuration: max_risk_pct_cap must be <= 1")
+        if self.equity_usd <= 0:
+            raise ValueError("Unsafe configuration: equity_usd must be > 0")
+        if self.equity_refresh_seconds <= 0:
+            raise ValueError("Unsafe configuration: equity_refresh_seconds must be > 0")
+        if self.cooldown_consecutive_losses < 0:
+            raise ValueError("Unsafe configuration: cooldown_consecutive_losses must be >= 0")
+        if self.cooldown_drawdown_pct < 0:
+            raise ValueError("Unsafe configuration: cooldown_drawdown_pct must be >= 0")
+        if self.cooldown_minutes < 0:
+            raise ValueError("Unsafe configuration: cooldown_minutes must be >= 0")
 
         return self
