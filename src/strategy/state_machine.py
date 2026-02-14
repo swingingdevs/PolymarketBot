@@ -45,6 +45,42 @@ class FillProbStats:
     samples: deque[tuple[float | None, float]] = field(default_factory=lambda: deque(maxlen=50))
 
 
+@dataclass(slots=True)
+class RollingStats:
+    count: int = 0
+    mean: float = 0.0
+    m2: float = 0.0
+
+    def add(self, value: float) -> None:
+        self.count += 1
+        delta = value - self.mean
+        self.mean += delta / self.count
+        delta2 = value - self.mean
+        self.m2 += delta * delta2
+
+    def remove(self, value: float) -> None:
+        if self.count <= 0:
+            return
+        if self.count == 1:
+            self.count = 0
+            self.mean = 0.0
+            self.m2 = 0.0
+            return
+        next_count = self.count - 1
+        delta = value - self.mean
+        next_mean = self.mean - (delta / next_count)
+        self.m2 -= delta * (value - next_mean)
+        self.count = next_count
+        self.mean = next_mean
+        if self.m2 < 0:
+            self.m2 = 0.0
+
+    def stddev(self) -> float:
+        if self.count <= 0:
+            return 0.0
+        return math.sqrt(self.m2 / max(1, self.count - 1))
+
+
 class StrategyStateMachine:
     def __init__(
         self,
@@ -89,6 +125,10 @@ class StrategyStateMachine:
         self.last_5m_bucket: int | None = None
         self.last_15m_bucket: int | None = None
         self.prices_1s: deque[tuple[int, float]] = deque(maxlen=max(120, self.rolling_window_seconds * 2))
+        self.rolling_returns: deque[float | None] = deque()
+        self.rolling_return_stats = RollingStats()
+        self.sigma1_window_returns: deque[float | None] = deque(maxlen=60)
+        self.sigma1_stats = RollingStats()
         self.books: dict[str, BookSnapshot] = {}
         self.fill_stats: dict[str, FillProbStats] = {}
 
@@ -161,10 +201,30 @@ class StrategyStateMachine:
             STALE_FEED.inc()
 
         sec = int(ts)
+
+        if self.prices_1s:
+            prev_price = self.prices_1s[-1][1]
+            latest_ret = ((price / prev_price) - 1.0) if prev_price > 0 else None
+            self.rolling_returns.append(latest_ret)
+            if latest_ret is not None:
+                self.rolling_return_stats.add(latest_ret)
+
+            if len(self.sigma1_window_returns) == self.sigma1_window_returns.maxlen:
+                expired_sigma_ret = self.sigma1_window_returns.popleft()
+                if expired_sigma_ret is not None:
+                    self.sigma1_stats.remove(expired_sigma_ret)
+            self.sigma1_window_returns.append(latest_ret)
+            if latest_ret is not None:
+                self.sigma1_stats.add(latest_ret)
+
         self.prices_1s.append((sec, price))
         cutoff = sec - self.rolling_window_seconds
         while self.prices_1s and self.prices_1s[0][0] < cutoff:
             self.prices_1s.popleft()
+            if self.rolling_returns:
+                expired_ret = self.rolling_returns.popleft()
+                if expired_ret is not None:
+                    self.rolling_return_stats.remove(expired_ret)
 
         self.last_price = price
 
@@ -192,6 +252,10 @@ class StrategyStateMachine:
             if sec - self.watch_mode_started_at >= self.watch_mode_expiry_seconds:
                 self._set_watch_mode(False, sec)
                 self.prices_1s = deque([(sec, price)], maxlen=max(120, self.rolling_window_seconds * 2))
+                self.rolling_returns = deque()
+                self.rolling_return_stats = RollingStats()
+                self.sigma1_window_returns = deque(maxlen=60)
+                self.sigma1_stats = RollingStats()
                 return
 
         if len(self.prices_1s) < 2:
@@ -203,14 +267,11 @@ class StrategyStateMachine:
 
         trigger_by_zscore = False
         if self.watch_zscore_threshold > 0:
-            rets = self._rolling_returns()
-            if len(rets) >= 2:
-                mean = sum(rets) / len(rets)
-                var = sum((x - mean) ** 2 for x in rets) / max(1, len(rets) - 1)
-                stddev = math.sqrt(var)
+            latest_ret = self.rolling_returns[-1] if self.rolling_returns else None
+            if self.rolling_return_stats.count >= 2 and latest_ret is not None:
+                stddev = self.rolling_return_stats.stddev()
                 if stddev > 0:
-                    latest_ret = rets[-1]
-                    z_score = abs((latest_ret - mean) / stddev)
+                    z_score = abs((latest_ret - self.rolling_return_stats.mean) / stddev)
                     trigger_by_zscore = z_score >= self.watch_zscore_threshold
 
         if trigger_by_return or trigger_by_zscore:
@@ -218,15 +279,7 @@ class StrategyStateMachine:
 
 
     def _rolling_returns(self) -> list[float]:
-        rows = list(self.prices_1s)
-        rets: list[float] = []
-        for idx in range(1, len(rows)):
-            prev_price = rows[idx - 1][1]
-            curr_price = rows[idx][1]
-            if prev_price <= 0:
-                continue
-            rets.append((curr_price / prev_price) - 1)
-        return rets
+        return [ret for ret in self.rolling_returns if ret is not None]
 
     def _set_watch_mode(self, enabled: bool, ts: int) -> None:
         if enabled == self.watch_mode:
@@ -243,17 +296,9 @@ class StrategyStateMachine:
     def _sigma1(self) -> float:
         if len(self.prices_1s) < 61:
             return 0.0
-        rows = list(self.prices_1s)[-61:]
-        rets = []
-        for i in range(1, len(rows)):
-            prev, curr = rows[i - 1][1], rows[i][1]
-            if prev > 0:
-                rets.append((curr / prev) - 1)
-        if not rets:
+        if self.sigma1_stats.count <= 0:
             return 0.0
-        mean = sum(rets) / len(rets)
-        var = sum((x - mean) ** 2 for x in rets) / max(1, len(rets) - 1)
-        return math.sqrt(max(var, 1e-12))
+        return math.sqrt(max((self.sigma1_stats.m2 / max(1, self.sigma1_stats.count - 1)), 1e-12))
 
     @staticmethod
     def _normal_cdf(x: float) -> float:
