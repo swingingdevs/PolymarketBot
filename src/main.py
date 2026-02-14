@@ -16,9 +16,18 @@ from feeds.rtds import RTDSFeed
 from logging_utils import configure_logging
 from markets.fee_rate_cache import FeeRateCache
 from markets.gamma_cache import GammaCache, UpDownMarket
-from markets.token_metadata_cache import TokenMetadataCache
+from markets.token_metadata_cache import TokenMetadata, TokenMetadataCache
 from ops.recorder import EventRecorder
-from metrics import HAMMER_ATTEMPTED, HAMMER_FILLED, KILL_SWITCH_ACTIVE, STALE_FEED, start_metrics_server
+from metrics import (
+    FEED_LAG_SECONDS,
+    HAMMER_ATTEMPTED,
+    HAMMER_FILLED,
+    KILL_SWITCH_ACTIVE,
+    ORACLE_SPOT_DIVERGENCE_PCT,
+    STALE_FEED,
+    TRADING_ALLOWED,
+    start_metrics_server,
+)
 from strategy.calibration import load_probability_calibrator
 from strategy.quorum_health import QuorumDecision, QuorumHealth
 from strategy.state_machine import StrategyStateMachine
@@ -292,6 +301,7 @@ async def orchestrate() -> None:
             divergence_pct=metadata.get("divergence_pct"),
             spot_price=metadata.get("spot_price"),
         )
+        previous_watch_mode = strategy.watch_mode
         strategy.on_price(ts, px, metadata)
 
         now_received = float(metadata.get("received_ts") or time.time())
@@ -339,7 +349,7 @@ async def orchestrate() -> None:
                 token_id=best.token_id,
                 notional=settings.quote_size_usd,
             )
-            if bool(kill_switch_state["active"]):
+            if not decision.trading_allowed:
                 logger.warning(
                     "order_blocked_by_quorum_health",
                     token_id=best.token_id,
