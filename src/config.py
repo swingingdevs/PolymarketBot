@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field, HttpUrl, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -55,10 +57,9 @@ class Settings(BaseSettings):
     clob_book_staleness_threshold: int = 10
     chainlink_direct_api_url: str = "https://api.chain.link/streams/btc-usd"
     use_fallback_feed: bool = True
-    settings_profile: str = "live"
 
+    settings_profile: Literal["paper", "live", "high_vol", "low_vol"] = "paper"
     watch_return_threshold: float = 0.005
-    settings_profile: str = "paper"
     watch_rolling_window_seconds: int = 60
     watch_zscore_threshold: float = 0.0
     watch_mode_expiry_seconds: int = 60
@@ -94,7 +95,6 @@ class Settings(BaseSettings):
     metrics_host: str = "0.0.0.0"
     metrics_port: int = 9102
     token_metadata_ttl_seconds: float = 300.0
-    settings_profile: str = "paper"
 
     @model_validator(mode="after")
     def apply_profile_defaults(self) -> "Settings":

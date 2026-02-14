@@ -3,6 +3,13 @@ import pytest
 from config import Settings
 
 
+def test_default_profile_is_applied() -> None:
+    settings = Settings()
+    assert settings.settings_profile == "paper"
+    assert settings.watch_return_threshold == 0.004
+    assert settings.hammer_secs == 20
+
+
 def test_profile_defaults_are_applied() -> None:
     settings = Settings(settings_profile="live")
     assert settings.watch_return_threshold == 0.006
@@ -12,7 +19,7 @@ def test_profile_defaults_are_applied() -> None:
     assert settings.fee_bps == 10.0
 
 
-def test_profile_can_be_overridden_by_init_values() -> None:
+def test_explicit_field_overrides_are_not_replaced_by_profile_defaults() -> None:
     settings = Settings(settings_profile="paper", fee_bps=15.0, hammer_secs=30)
     assert settings.fee_bps == 15.0
     assert settings.hammer_secs == 30
@@ -34,7 +41,7 @@ def test_explicit_env_overrides_still_win(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_invalid_profile_is_rejected_with_useful_error() -> None:
-    with pytest.raises(ValueError, match=r"Unknown settings_profile=bad_profile.*Allowed"):
+    with pytest.raises(ValueError, match=r"Input should be 'paper', 'live', 'high_vol' or 'low_vol'"):
         Settings(settings_profile="bad_profile")
 
 
