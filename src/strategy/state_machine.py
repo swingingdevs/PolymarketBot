@@ -8,6 +8,7 @@ import structlog
 
 from metrics import CURRENT_EV, WATCH_EVENTS
 from markets.gamma_cache import UpDownMarket
+from strategy.calibration import CalibrationInput, IdentityCalibrator, ProbabilityCalibrator
 from utils.price_validation import is_price_stale, validate_price_source
 
 logger = structlog.get_logger(__name__)
@@ -31,12 +32,23 @@ class BookSnapshot:
 
 
 class StrategyStateMachine:
-    def __init__(self, threshold: float, hammer_secs: int, d_min: float, max_entry_price: float, fee_bps: float) -> None:
+    def __init__(
+        self,
+        threshold: float,
+        hammer_secs: int,
+        d_min: float,
+        max_entry_price: float,
+        fee_bps: float,
+        probability_calibrator: ProbabilityCalibrator | None = None,
+        calibration_input: CalibrationInput = "p_hat",
+    ) -> None:
         self.threshold = threshold
         self.hammer_secs = hammer_secs
         self.d_min = d_min
         self.max_entry_price = max_entry_price
         self.fee_bps = fee_bps
+        self.probability_calibrator = probability_calibrator or IdentityCalibrator()
+        self.calibration_input = calibration_input
 
         self.last_price: float | None = None
         self.curr_minute_start: int | None = None
@@ -141,7 +153,13 @@ class StrategyStateMachine:
 
         z_up = (start - curr) / (curr * sigma_t)
         p_up = 1 - self._normal_cdf(z_up)
-        p_hat = p_up if direction == "UP" else 1 - p_up
+        raw_p_hat = p_up if direction == "UP" else 1 - p_up
+        z_directional = -z_up if direction == "UP" else z_up
+
+        if self.calibration_input == "z_score":
+            p_hat = self.probability_calibrator.calibrate(z_directional)
+        else:
+            p_hat = self.probability_calibrator.calibrate(raw_p_hat)
 
         fee_cost = self.fee_bps / 10000.0
         ev = p_hat - ask - fee_cost

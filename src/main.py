@@ -15,6 +15,7 @@ from feeds.rtds import RTDSFeed
 from logging_utils import configure_logging
 from markets.gamma_cache import GammaCache, UpDownMarket
 from metrics import start_metrics_server
+from strategy.calibration import load_probability_calibrator
 from strategy.state_machine import StrategyStateMachine
 
 logger = structlog.get_logger(__name__)
@@ -128,12 +129,20 @@ async def orchestrate() -> None:
     )
     fallback = ChainlinkDirectFeed(settings.chainlink_direct_api_url)
     trader = Trader(settings)
+    calibrator = load_probability_calibrator(
+        method=settings.calibration_method,
+        params_path=settings.calibration_params_path or None,
+        logistic_coef=settings.calibration_logistic_coef,
+        logistic_intercept=settings.calibration_logistic_intercept,
+    )
     strategy = StrategyStateMachine(
         threshold=settings.watch_return_threshold,
         hammer_secs=settings.hammer_secs,
         d_min=settings.d_min,
         max_entry_price=settings.max_entry_price,
         fee_bps=settings.fee_bps,
+        probability_calibrator=calibrator,
+        calibration_input=settings.calibration_input,
     )
 
     market_state: dict[str, UpDownMarket] = {}
