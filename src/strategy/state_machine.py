@@ -53,11 +53,13 @@ class StrategyStateMachine:
         d_min: float,
         max_entry_price: float,
         fee_bps: float,
+        expected_notional_usd: float = 10.0,
         price_stale_after_seconds: float = 2.0,
         probability_calibrator: ProbabilityCalibrator | None = None,
         calibration_input: CalibrationInput = "p_hat",
         token_metadata_cache: TokenMetadataCache | None = None,
         rolling_window_seconds: int = 60,
+        depth_penalty_coeff: float = 1.0,
         watch_zscore_threshold: float = 0.0,
         watch_mode_expiry_seconds: int = 60,
     ) -> None:
@@ -66,11 +68,13 @@ class StrategyStateMachine:
         self.d_min = d_min
         self.max_entry_price = max_entry_price
         self.fee_bps = fee_bps
+        self.expected_notional_usd = expected_notional_usd
         self.price_stale_after_seconds = price_stale_after_seconds
         self.probability_calibrator = probability_calibrator or IdentityCalibrator()
         self.calibration_input = calibration_input
         self.token_metadata_cache = token_metadata_cache
         self.rolling_window_seconds = max(2, rolling_window_seconds)
+        self.depth_penalty_coeff = max(0.0, depth_penalty_coeff)
         self.watch_zscore_threshold = watch_zscore_threshold
         self.watch_mode_expiry_seconds = max(1, watch_mode_expiry_seconds)
 

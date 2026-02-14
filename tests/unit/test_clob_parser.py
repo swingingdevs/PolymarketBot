@@ -7,7 +7,7 @@ import pytest
 
 from feeds.clob_ws import CLOBWebSocket
 
-FIXTURE_DIR = Path(__file__).parent / "fixtures" / "clob_ws"
+FIXTURE_DIR = Path(__file__).parents[1] / "fixtures" / "clob_ws"
 
 
 @pytest.mark.parametrize(
