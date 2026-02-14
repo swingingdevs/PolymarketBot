@@ -113,7 +113,6 @@ def test_rtds_subscribe_both_topics_and_timestamp_normalization(monkeypatch: pyt
         assert json.loads(sub["filters"]) == {"symbol": "btc/usd"}
 
 
-
 def test_rtds_divergence_only_when_spot_is_fresh(monkeypatch: pytest.MonkeyPatch) -> None:
     fresh_ws = _FakeWebSocket(
         [
@@ -184,6 +183,7 @@ def test_rtds_divergence_only_when_spot_is_fresh(monkeypatch: pytest.MonkeyPatch
     assert "spot_price" not in stale_metadata
     assert "divergence_pct" not in stale_metadata
 
+
 def test_rtds_staleness_uses_normalized_timestamps(monkeypatch: pytest.MonkeyPatch) -> None:
     ws = _FakeWebSocket(
         [
@@ -212,7 +212,9 @@ def test_rtds_staleness_uses_normalized_timestamps(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr("feeds.rtds.websockets.connect", _connect_factory(ws))
 
     warnings: list[dict[str, object]] = []
-    monkeypatch.setattr("feeds.rtds.logger.warning", lambda event, **kwargs: warnings.append({"event": event, **kwargs}))
+    monkeypatch.setattr(
+        "feeds.rtds.logger.warning", lambda event, **kwargs: warnings.append({"event": event, **kwargs})
+    )
 
     timeline = iter([11.0, 17.0])
     monkeypatch.setattr("feeds.rtds.time.time", lambda: next(timeline, 15.0))

@@ -34,3 +34,12 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-ignore = ["E402"]
+
+[tool.black]
+line-length = 120
+target-version = ["py311"]

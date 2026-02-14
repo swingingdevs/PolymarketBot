@@ -96,7 +96,6 @@ class GammaCache:
         if "btc" not in question + desc or "usd" not in question + desc:
             raise ValueError("underlying is not BTC/USD")
 
-
     @staticmethod
     def _extract_float(value: object) -> float | None:
         try:
@@ -120,7 +119,9 @@ class GammaCache:
                     return parsed
             return None
 
-        global_tick = first_float(row, ("orderPriceMinTickSize", "minimum_tick_size", "minTickSize", "tickSize", "tick_size"))
+        global_tick = first_float(
+            row, ("orderPriceMinTickSize", "minimum_tick_size", "minTickSize", "tickSize", "tick_size")
+        )
         global_min_size = first_float(row, ("orderMinSize", "minimum_order_size", "minOrderSize", "min_order_size"))
         global_fee = first_float(row, ("fee_rate_bps", "takerFeeBps", "taker_fee_bps", "baseFeeRateBps"))
 
@@ -143,8 +144,12 @@ class GammaCache:
             if candidate_token_id != token_id:
                 continue
 
-            token_tick = first_float(candidate, ("orderPriceMinTickSize", "minimum_tick_size", "minTickSize", "tickSize", "tick_size"))
-            token_min_size = first_float(candidate, ("orderMinSize", "minimum_order_size", "minOrderSize", "min_order_size"))
+            token_tick = first_float(
+                candidate, ("orderPriceMinTickSize", "minimum_tick_size", "minTickSize", "tickSize", "tick_size")
+            )
+            token_min_size = first_float(
+                candidate, ("orderMinSize", "minimum_order_size", "minOrderSize", "min_order_size")
+            )
             token_fee = first_float(candidate, ("fee_rate_bps", "takerFeeBps", "taker_fee_bps", "baseFeeRateBps"))
             tick_size = token_tick if token_tick is not None else tick_size
             min_order_size = token_min_size if token_min_size is not None else min_order_size

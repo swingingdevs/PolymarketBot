@@ -71,9 +71,7 @@ def main() -> None:
     print(f"brier_score={brier_score(probabilities, outcomes):.6f}")
     print("bin_start,bin_end,count,mean_predicted,empirical_rate")
     for row in calibration_curve(probabilities, outcomes, bins=args.bins):
-        print(
-            f"{row.bin_start:.3f},{row.bin_end:.3f},{row.count},{row.mean_predicted:.6f},{row.empirical_rate:.6f}"
-        )
+        print(f"{row.bin_start:.3f},{row.bin_end:.3f},{row.count},{row.mean_predicted:.6f},{row.empirical_rate:.6f}")
 
 
 if __name__ == "__main__":

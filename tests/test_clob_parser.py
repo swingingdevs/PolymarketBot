@@ -15,7 +15,10 @@ FIXTURE_DIR = Path(__file__).parent / "fixtures" / "clob_ws"
     [
         ("wss://ws-subscriptions-clob.polymarket.com", "wss://ws-subscriptions-clob.polymarket.com/ws/market"),
         ("wss://ws-subscriptions-clob.polymarket.com/", "wss://ws-subscriptions-clob.polymarket.com/ws/market"),
-        ("wss://ws-subscriptions-clob.polymarket.com/ws/market", "wss://ws-subscriptions-clob.polymarket.com/ws/market"),
+        (
+            "wss://ws-subscriptions-clob.polymarket.com/ws/market",
+            "wss://ws-subscriptions-clob.polymarket.com/ws/market",
+        ),
         ("wss://example.com/custom/base", "wss://example.com/custom/base/ws/market"),
     ],
 )

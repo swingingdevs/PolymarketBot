@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import csv
-import json
 import math
 import os
 import queue
@@ -239,7 +238,9 @@ def main() -> None:
 
         st.header("Feeds")
         rtds_url = st.text_input("RTDS URL", value=os.getenv("RTDS_WS_URL", "wss://ws-live-data.polymarket.com"))
-        clob_url = st.text_input("CLOB URL", value=os.getenv("CLOB_WS_BASE", "wss://ws-subscriptions-clob.polymarket.com"))
+        clob_url = st.text_input(
+            "CLOB URL", value=os.getenv("CLOB_WS_BASE", "wss://ws-subscriptions-clob.polymarket.com")
+        )
         symbol = st.text_input("Symbol", value=os.getenv("SYMBOL", "btc/usd"))
         token_ids = st.text_area("Token IDs (comma separated)", value="")
         price_staleness = st.number_input("Price staleness threshold (s)", value=10, min_value=1, max_value=300)
@@ -347,10 +348,7 @@ def main() -> None:
 
     with st.expander("Recent raw events"):
         recent = list(st.session_state.events)[-100:]
-        st.write([
-            {"ts": e.ts, "kind": e.kind, "payload": e.payload}
-            for e in recent
-        ])
+        st.write([{"ts": e.ts, "kind": e.kind, "payload": e.payload} for e in recent])
 
     replay_dir = Path("data/replay_sessions")
     _render_replay_panel(replay_dir)

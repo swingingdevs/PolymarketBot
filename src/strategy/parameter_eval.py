@@ -87,7 +87,9 @@ def _max_drawdown(equity_curve: list[float]) -> float:
     return abs(max_dd)
 
 
-def replay_with_params(rows: list[ReplayRow], markets: list[UpDownMarket], params: dict[str, float | int]) -> dict[str, float | int]:
+def replay_with_params(
+    rows: list[ReplayRow], markets: list[UpDownMarket], params: dict[str, float | int]
+) -> dict[str, float | int]:
     sm = StrategyStateMachine(
         threshold=float(params["watch_return_threshold"]),
         hammer_secs=int(params["hammer_secs"]),
@@ -237,7 +239,9 @@ def sweep_parameter_grid(
     return ranked, robust_ranges
 
 
-def export_report(report: list[dict[str, float | int]], robust_ranges: dict[str, dict[str, float]], output_prefix: Path) -> None:
+def export_report(
+    report: list[dict[str, float | int]], robust_ranges: dict[str, dict[str, float]], output_prefix: Path
+) -> None:
     output_prefix.parent.mkdir(parents=True, exist_ok=True)
 
     json_path = output_prefix.with_suffix(".json")

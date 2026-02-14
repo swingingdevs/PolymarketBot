@@ -97,7 +97,9 @@ def test_depth_penalty_scales_with_displayed_size_shortfall() -> None:
 
 
 def test_candidate_ev_has_sufficient_depth_keeps_fill_probability() -> None:
-    sm = StrategyStateMachine(0.005, hammer_secs=15, d_min=1.0, max_entry_price=0.99, fee_bps=0, expected_notional_usd=20.0)
+    sm = StrategyStateMachine(
+        0.005, hammer_secs=15, d_min=1.0, max_entry_price=0.99, fee_bps=0, expected_notional_usd=20.0
+    )
 
     t0 = 1_710_000_000
     _seed_state(sm, t0)
@@ -110,7 +112,9 @@ def test_candidate_ev_has_sufficient_depth_keeps_fill_probability() -> None:
 
 
 def test_candidate_ev_forces_fill_probability_to_zero_when_depth_is_insufficient() -> None:
-    sm = StrategyStateMachine(0.005, hammer_secs=15, d_min=1.0, max_entry_price=0.99, fee_bps=0, expected_notional_usd=20.0)
+    sm = StrategyStateMachine(
+        0.005, hammer_secs=15, d_min=1.0, max_entry_price=0.99, fee_bps=0, expected_notional_usd=20.0
+    )
 
     t0 = 1_710_000_000
     _seed_state(sm, t0)
@@ -124,7 +128,9 @@ def test_candidate_ev_forces_fill_probability_to_zero_when_depth_is_insufficient
 
 
 def test_candidate_ev_depth_boundary_uses_equality_as_sufficient_depth() -> None:
-    sm = StrategyStateMachine(0.005, hammer_secs=15, d_min=1.0, max_entry_price=0.99, fee_bps=0, expected_notional_usd=20.0)
+    sm = StrategyStateMachine(
+        0.005, hammer_secs=15, d_min=1.0, max_entry_price=0.99, fee_bps=0, expected_notional_usd=20.0
+    )
 
     t0 = 1_710_000_000
     _seed_state(sm, t0)

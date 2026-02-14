@@ -194,9 +194,7 @@ class StrategyStateMachine:
         if not validate_price_source(metadata):
             logger.warning("invalid_price_source", metadata=metadata)
             return
-        if is_price_stale(
-            float(metadata.get("timestamp", ts)), stale_after_seconds=self.price_stale_after_seconds
-        ):
+        if is_price_stale(float(metadata.get("timestamp", ts)), stale_after_seconds=self.price_stale_after_seconds):
             logger.warning("stale_price_update", timestamp=metadata.get("timestamp", ts))
             STALE_FEED.inc()
 
@@ -276,7 +274,6 @@ class StrategyStateMachine:
 
         if trigger_by_return or trigger_by_zscore:
             self._set_watch_mode(True, sec)
-
 
     def _rolling_returns(self) -> list[float]:
         return [ret for ret in self.rolling_returns if ret is not None]

@@ -44,9 +44,9 @@ class RTDSFeed:
         self.log_price_comparison = log_price_comparison
 
         normalized_symbol = self.symbol.lower()
-        encoded_filters = json.dumps({"symbol": normalized_symbol})
+        encoded_filters = orjson.dumps({"symbol": normalized_symbol}).decode("utf-8")
         self._subscription_bytes_by_symbol: dict[str, bytes] = {
-            normalized_symbol: json.dumps(
+            normalized_symbol: orjson.dumps(
                 {
                     "action": "subscribe",
                     "subscriptions": [
@@ -54,7 +54,7 @@ class RTDSFeed:
                         {"topic": self.spot_topic, "type": "*", "filters": encoded_filters},
                     ],
                 }
-            ).encode()
+            )
         }
 
         self._last_price_ts: float = 0.0
@@ -86,23 +86,21 @@ class RTDSFeed:
             backoff_reset = False
             try:
                 async with websockets.connect(self.ws_url, ping_interval=None, ping_timeout=None) as ws:
-                    sub = {
-                        "action": "subscribe",
-                        "subscriptions": [
+                    subscription_payload = self._subscription_bytes_by_symbol.get(normalized_symbol)
+                    if subscription_payload is None:
+                        encoded_filters = orjson.dumps({"symbol": normalized_symbol}).decode("utf-8")
+                        subscription_payload = orjson.dumps(
                             {
-                                "topic": self.topic,
-                                "type": "*",
-                                "filters": orjson.dumps({"symbol": normalized_symbol}).decode("utf-8"),
-                            },
-                            {
-                                "topic": self.spot_topic,
-                                "type": "*",
-                                "filters": orjson.dumps({"symbol": normalized_symbol}).decode("utf-8"),
-                            },
-                        ],
-                    }
-                    await ws.send(orjson.dumps(sub))
-                    logger.info("rtds_subscribed", subscription=sub)
+                                "action": "subscribe",
+                                "subscriptions": [
+                                    {"topic": self.topic, "type": "*", "filters": encoded_filters},
+                                    {"topic": self.spot_topic, "type": "*", "filters": encoded_filters},
+                                ],
+                            }
+                        )
+                        self._subscription_bytes_by_symbol[normalized_symbol] = subscription_payload
+                    await ws.send(subscription_payload)
+                    logger.info("rtds_subscribed", symbol=normalized_symbol)
                     stable_since = time.time()
                     hb_task = asyncio.create_task(self._heartbeat(ws, failed_pings))
 
