@@ -41,6 +41,16 @@ CURRENT_EV = Gauge("bot_current_best_ev", "Best EV at decision point")
 DAILY_REALIZED_PNL = Gauge("bot_daily_realized_pnl_usd", "Daily realized PnL in USD")
 RISK_LIMIT_BLOCKED = Gauge("bot_risk_limit_blocked", "1 if trading is blocked by risk limits")
 KILL_SWITCH_ACTIVE = Gauge("bot_kill_switch_active", "1 if divergence kill-switch is active")
+ORACLE_SPOT_DIVERGENCE_PCT = Gauge(
+    "oracle_spot_divergence_pct",
+    "Absolute percentage divergence between chainlink and spot median",
+)
+FEED_LAG_SECONDS = Gauge(
+    "feed_lag_seconds",
+    "Lag between now and latest payload timestamp by feed",
+    ["feed"],
+)
+TRADING_ALLOWED = Gauge("trading_allowed", "1 when quorum health permits trading")
 
 
 def start_metrics_server(host: str, port: int) -> None:
