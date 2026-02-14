@@ -43,5 +43,6 @@ class Settings(BaseSettings):
     api_passphrase: str = Field(default="", repr=False)
 
     quote_size_usd: float = 20.0
+    order_submit_timeout_seconds: float = 5.0
     metrics_host: str = "0.0.0.0"
     metrics_port: int = 9102
