@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 from bisect import bisect_left
 from dataclasses import dataclass
 from itertools import product
 from pathlib import Path
 
+import orjson
 from markets.gamma_cache import UpDownMarket
 from strategy.state_machine import StrategyStateMachine
 
@@ -74,7 +74,7 @@ def load_replay_rows(path: Path) -> list[ReplayRow]:
 
 
 def load_markets(path: Path) -> list[UpDownMarket]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = orjson.loads(path.read_bytes())
     return [UpDownMarket(**row) for row in payload]
 
 
@@ -194,7 +194,7 @@ def replay_with_params(rows: list[ReplayRow], markets: list[UpDownMarket], param
 
 
 def _parse_grid(grid_raw: str) -> dict[str, list[float]]:
-    payload = json.loads(grid_raw)
+    payload = orjson.loads(grid_raw)
     parsed: dict[str, list[float]] = {}
     for key, values in payload.items():
         parsed[key] = [float(v) for v in values]
@@ -243,7 +243,7 @@ def export_report(report: list[dict[str, float | int]], robust_ranges: dict[str,
     json_path = output_prefix.with_suffix(".json")
     csv_path = output_prefix.with_suffix(".csv")
 
-    json_path.write_text(json.dumps({"runs": report, "robust_ranges": robust_ranges}, indent=2), encoding="utf-8")
+    json_path.write_bytes(orjson.dumps({"runs": report, "robust_ranges": robust_ranges}, option=orjson.OPT_INDENT_2))
 
     if report:
         fieldnames = list(report[0].keys())

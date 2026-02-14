@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import time
 from dataclasses import dataclass
 from urllib.parse import urlparse
 from typing import AsyncIterator
 
+import orjson
 import structlog
 import websockets
 
@@ -274,10 +274,10 @@ class CLOBWebSocket:
         self._drop_message("unrecognized_event_type", event_type=event_type, event=event)
         return tops
 
-    def _parse_raw_message(self, raw: str, last_update: list[float]) -> list[BookTop]:
+    def _parse_raw_message(self, raw: str | bytes, last_update: list[float]) -> list[BookTop]:
         try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
+            data = orjson.loads(raw)
+        except orjson.JSONDecodeError:
             self._drop_message("invalid_json", event_type="invalid_json")
             return []
 
@@ -311,7 +311,7 @@ class CLOBWebSocket:
         desired = set(token_ids)
         if desired == self._subscribed_token_ids:
             return
-        await self._ws.send(self._build_subscription_payload(desired))
+        await self._ws.send(orjson.dumps({"assets_ids": sorted(desired), "type": "market"}))
         self._subscribed_token_ids = desired
 
     async def stream_books(self, token_ids: list[str]) -> AsyncIterator[BookTop]:
@@ -322,9 +322,9 @@ class CLOBWebSocket:
             try:
                 async with websockets.connect(self.ws_url, ping_interval=None, ping_timeout=None) as ws:
                     self._ws = ws
-                    desired = set(token_ids)
-                    await ws.send(self._build_subscription_payload(desired))
-                    self._subscribed_token_ids = desired
+                    self._subscribed_token_ids = set(token_ids)
+                    sub = {"assets_ids": token_ids, "type": "market"}
+                    await ws.send(orjson.dumps(sub))
                     hb_task = asyncio.create_task(self._heartbeat(ws, failed_pings))
                     last_update = [time.time()]
                     stale_task = asyncio.create_task(self._stale_watchdog(last_update, token_ids, "book"))
