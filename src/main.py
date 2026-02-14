@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 import structlog
 
 from config import Settings
+from execution.heartbeat_monitor import HeartbeatMonitor
 from execution.trader import Trader
 from geo import check_geoblock
 from feeds.chainlink_direct import SpotLivenessFallbackFeed
@@ -233,6 +234,17 @@ async def orchestrate() -> None:
     token_metadata_cache = TokenMetadataCache(ttl_seconds=settings.token_metadata_ttl_seconds)
     fee_rate_cache = FeeRateCache(settings.clob_host, ttl_seconds=settings.fee_rate_ttl_seconds)
     trader = Trader(settings, token_metadata_cache=token_metadata_cache)
+    heartbeat_monitor: HeartbeatMonitor | None = None
+    if not settings.dry_run and settings.heartbeat_enabled:
+        heartbeat_monitor = HeartbeatMonitor(
+            enabled=True,
+            interval_seconds=settings.heartbeat_interval_seconds,
+            max_consecutive_failures=settings.heartbeat_max_consecutive_failures,
+            cancel_on_failure=settings.heartbeat_cancel_on_failure,
+            send_heartbeat=trader.send_heartbeat,
+            on_failure_threshold_exceeded=trader.cancel_outstanding_orders,
+        )
+        heartbeat_monitor.start()
     calibrator = load_probability_calibrator(
         method=settings.calibration_method,
         params_path=settings.calibration_params_path or None,
@@ -689,6 +701,8 @@ async def orchestrate() -> None:
             tg.create_task(run_resilient("consume_clob", consume_clob))
             tg.create_task(run_resilient("monitor_rtds_staleness", monitor_rtds_staleness))
     finally:
+        if heartbeat_monitor is not None:
+            await heartbeat_monitor.stop()
         if fallback_task and not fallback_task.done():
             fallback_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

@@ -184,6 +184,10 @@ class Settings(BaseSettings):
     recorder_output_path: str = "artifacts/session_recording.jsonl"
     recorder_queue_maxsize: int = 10000
     geoblock_abort: bool = True
+    heartbeat_enabled: bool = True
+    heartbeat_interval_seconds: float = 15.0
+    heartbeat_max_consecutive_failures: int = 2
+    heartbeat_cancel_on_failure: bool = True
 
     @model_validator(mode="after")
     def apply_profile_defaults(self) -> "Settings":
@@ -233,6 +237,10 @@ class Settings(BaseSettings):
             raise ValueError("Unsafe configuration: rtds_recovery_stabilization_seconds must be > 0")
         if self.rtds_recovery_min_fresh_updates <= 0:
             raise ValueError("Unsafe configuration: rtds_recovery_min_fresh_updates must be > 0")
+        if self.heartbeat_interval_seconds <= 0:
+            raise ValueError("Unsafe configuration: heartbeat_interval_seconds must be > 0")
+        if self.heartbeat_max_consecutive_failures <= 0:
+            raise ValueError("Unsafe configuration: heartbeat_max_consecutive_failures must be > 0")
 
         return self
 
