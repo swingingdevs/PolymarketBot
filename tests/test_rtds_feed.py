@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 
+import orjson
 import pytest
 
 from feeds.rtds import RTDSFeed
@@ -12,9 +13,9 @@ class _FakeWebSocket:
     def __init__(self, messages: list[str]) -> None:
         self._messages = messages
         self._idx = 0
-        self.sent_payloads: list[str] = []
+        self.sent_payloads: list[str | bytes] = []
 
-    async def send(self, payload: str) -> None:
+    async def send(self, payload: str | bytes) -> None:
         self.sent_payloads.append(payload)
 
     def ping(self):
@@ -103,7 +104,7 @@ def test_rtds_subscribe_both_topics_and_timestamp_normalization(monkeypatch: pyt
     assert metadata["divergence_pct"] > 0
 
     assert len(ws.sent_payloads) == 1
-    subscribe = json.loads(ws.sent_payloads[0])
+    subscribe = orjson.loads(ws.sent_payloads[0])
     assert subscribe["action"] == "subscribe"
     topics = [item["topic"] for item in subscribe["subscriptions"]]
     assert topics == ["crypto_prices_chainlink", "crypto_prices"]

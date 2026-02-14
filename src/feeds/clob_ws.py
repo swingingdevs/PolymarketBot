@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import time
 from dataclasses import dataclass
 from urllib.parse import urlparse
 from typing import AsyncIterator
 
+import orjson
 import structlog
 import websockets
 
@@ -272,10 +272,10 @@ class CLOBWebSocket:
         self._drop_message("unrecognized_event_type", event_type=event_type, event=event)
         return tops
 
-    def _parse_raw_message(self, raw: str, last_update: list[float]) -> list[BookTop]:
+    def _parse_raw_message(self, raw: str | bytes, last_update: list[float]) -> list[BookTop]:
         try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
+            data = orjson.loads(raw)
+        except orjson.JSONDecodeError:
             self._drop_message("invalid_json", event_type="invalid_json")
             return []
 
@@ -302,7 +302,7 @@ class CLOBWebSocket:
         desired = set(token_ids)
         if desired == self._subscribed_token_ids:
             return
-        await self._ws.send(json.dumps({"assets_ids": sorted(desired), "type": "market"}))
+        await self._ws.send(orjson.dumps({"assets_ids": sorted(desired), "type": "market"}))
         self._subscribed_token_ids = desired
 
     async def stream_books(self, token_ids: list[str]) -> AsyncIterator[BookTop]:
@@ -315,7 +315,7 @@ class CLOBWebSocket:
                     self._ws = ws
                     self._subscribed_token_ids = set(token_ids)
                     sub = {"assets_ids": token_ids, "type": "market"}
-                    await ws.send(json.dumps(sub))
+                    await ws.send(orjson.dumps(sub))
                     hb_task = asyncio.create_task(self._heartbeat(ws, failed_pings))
                     last_update = [time.time()]
                     stale_task = asyncio.create_task(self._stale_watchdog(last_update, token_ids, "book"))

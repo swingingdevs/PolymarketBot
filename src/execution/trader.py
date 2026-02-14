@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import asyncio
 import math
 import re
@@ -10,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import orjson
 import structlog
 
 from config import Settings
@@ -137,9 +137,8 @@ class Trader:
         if not self._risk_state_path.exists():
             return RiskState()
         try:
-            with self._risk_state_path.open("r", encoding="utf-8") as fp:
-                payload = json.load(fp)
-        except (OSError, ValueError, TypeError):
+            payload = orjson.loads(self._risk_state_path.read_bytes())
+        except (OSError, TypeError, ValueError, orjson.JSONDecodeError):
             logger.warning("risk_state_load_failed", path=str(self._risk_state_path))
             return RiskState()
 
@@ -210,8 +209,7 @@ class Trader:
     def _persist_risk_state(self) -> None:
         try:
             self._risk_state_path.parent.mkdir(parents=True, exist_ok=True)
-            with self._risk_state_path.open("w", encoding="utf-8") as fp:
-                json.dump(asdict(self.risk), fp)
+            self._risk_state_path.write_bytes(orjson.dumps(asdict(self.risk)))
         except OSError:
             logger.warning("risk_state_persist_failed", path=str(self._risk_state_path))
 

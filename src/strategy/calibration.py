@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+import orjson
 import structlog
 
 logger = structlog.get_logger(__name__)
@@ -83,8 +83,8 @@ def _read_params(params_path: str | None) -> dict[str, object] | None:
         return None
 
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        return orjson.loads(path.read_bytes())
+    except (OSError, orjson.JSONDecodeError):
         logger.exception("failed_to_read_calibration_params", params_path=params_path)
         return None
 

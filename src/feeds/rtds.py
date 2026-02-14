@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import time
 from typing import AsyncIterator
 
+import orjson
 import structlog
 import websockets
 
@@ -78,16 +78,16 @@ class RTDSFeed:
                             {
                                 "topic": self.topic,
                                 "type": "*",
-                                "filters": json.dumps({"symbol": normalized_symbol}),
+                                "filters": orjson.dumps({"symbol": normalized_symbol}).decode("utf-8"),
                             },
                             {
                                 "topic": self.spot_topic,
                                 "type": "*",
-                                "filters": json.dumps({"symbol": normalized_symbol}),
+                                "filters": orjson.dumps({"symbol": normalized_symbol}).decode("utf-8"),
                             },
                         ],
                     }
-                    await ws.send(json.dumps(sub))
+                    await ws.send(orjson.dumps(sub))
                     logger.info("rtds_subscribed", subscription=sub)
                     stable_since = time.time()
                     hb_task = asyncio.create_task(self._heartbeat(ws, failed_pings))
@@ -102,7 +102,7 @@ class RTDSFeed:
                                 backoff = self.reconnect_delay_min
                                 stability_met = True
 
-                            data = json.loads(message)
+                            data = orjson.loads(message)
                             payload = data.get("payload", {})
                             payload_symbol = str(payload.get("symbol", "")).lower()
                             if payload_symbol != normalized_symbol:
