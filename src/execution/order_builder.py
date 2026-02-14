@@ -82,24 +82,57 @@ class OrderBuilder:
         price: float,
         size: float,
         side: str = "BUY",
-        time_in_force: str = "FOK",
+        time_in_force: str | None = None,
+        post_only: bool = False,
+        fok: bool = True,
     ) -> tuple[Any, bool, float]:
+        if time_in_force is None:
+            time_in_force = "FOK" if fok else "GTC"
+        normalized_tif = str(time_in_force).strip().upper()
+        if not normalized_tif:
+            raise ValueError("time_in_force_required")
+        if fok and normalized_tif != "FOK":
+            raise ValueError("fok_conflicts_with_time_in_force")
+
         fee_rate_bps, used_fallback = self.resolve_fee_rate_bps(token_id)
-        payload = {
+        base_payload = {
             "price": price,
             "size": size,
             "side": side,
             "token_id": token_id,
-            "time_in_force": time_in_force,
+            "time_in_force": normalized_tif,
+            "post_only": bool(post_only),
             "feeRateBps": int(round(fee_rate_bps)),
         }
 
         if hasattr(self.clob_client, "create_limit_order"):
-            try:
-                order = self.clob_client.create_limit_order(**payload)
-            except TypeError:
-                payload["fee_rate_bps"] = payload.pop("feeRateBps")
-                order = self.clob_client.create_limit_order(**payload)
+            payload_variants = []
+            for fee_key in ("feeRateBps", "fee_rate_bps"):
+                for tif_key in ("time_in_force", "timeInForce"):
+                    for post_key in ("post_only", "postOnly"):
+                        payload = {
+                            "price": base_payload["price"],
+                            "size": base_payload["size"],
+                            "side": base_payload["side"],
+                            "token_id": base_payload["token_id"],
+                            fee_key: base_payload["feeRateBps"],
+                            tif_key: base_payload["time_in_force"],
+                            post_key: base_payload["post_only"],
+                        }
+                        payload_variants.append(payload)
+
+            last_exc: Exception | None = None
+            order = None
+            for payload in payload_variants:
+                try:
+                    order = self.clob_client.create_limit_order(**payload)
+                    break
+                except TypeError as exc:
+                    last_exc = exc
+            if order is None:
+                if last_exc is None:
+                    raise RuntimeError("limit_order_build_failed")
+                raise last_exc
         else:
             raise RuntimeError("unsupported_order_submission_api")
 

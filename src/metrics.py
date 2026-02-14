@@ -22,6 +22,9 @@ except Exception:  # pragma: no cover
     def start_http_server(*_args, **_kwargs):
         return None
 
+BOT_API_CREDS_AGE_SECONDS = Gauge("bot_api_creds_age_seconds", "Age of currently active CLOB API credentials")
+BOT_FEE_FETCH_FAILURES_TOTAL = Counter("bot_fee_fetch_failures_total", "Number of fee-rate fetch failures")
+BOT_FEE_RATE_BPS = Gauge("bot_fee_rate_bps", "Latest fee rate in bps by token", ["token_id"])
 WATCH_EVENTS = Counter("bot_watch_events_total", "Number of watch triggers")
 WATCH_TRIGGERED = Counter("bot_watch_triggered_total", "Number of watch mode trigger events")
 HAMMER_ATTEMPTED = Counter("bot_hammer_attempted_total", "Number of hammer order attempts")

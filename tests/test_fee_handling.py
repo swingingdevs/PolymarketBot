@@ -27,8 +27,8 @@ class _FakeClient:
         self.orders: list[dict[str, object]] = []
 
     def create_limit_order(self, **kwargs):
-        if "feeRateBps" not in kwargs:
-            raise RuntimeError("rejected_missing_feeRateBps")
+        if "feeRateBps" not in kwargs and "fee_rate_bps" not in kwargs:
+            raise RuntimeError("rejected_missing_fee_rate")
         self.orders.append(kwargs)
         return kwargs
 
@@ -96,3 +96,32 @@ def test_ev_after_fees_blocks_trade_when_negative() -> None:
     assert best is not None
     assert best.fee_cost > 0
     assert best.ev <= 0
+
+
+def test_order_builder_includes_post_only_and_tif_payload() -> None:
+    fake_client = _FakeClient()
+    builder = order_builder.OrderBuilder(fake_client, enable_fee_rate=False, default_fee_rate_bps=5)
+
+    payload, _used_fallback, _fee_rate_bps = builder.build_signed_order(
+        token_id="token-1",
+        price=0.5,
+        size=10,
+        post_only=True,
+        fok=False,
+        time_in_force="GTC",
+    )
+
+    assert payload.get("post_only", payload.get("postOnly")) is True
+    assert payload.get("time_in_force", payload.get("timeInForce")) == "GTC"
+
+
+def test_order_builder_rejects_conflicting_fok_and_time_in_force() -> None:
+    fake_client = _FakeClient()
+    builder = order_builder.OrderBuilder(fake_client, enable_fee_rate=False, default_fee_rate_bps=5)
+
+    try:
+        builder.build_signed_order(token_id="token-1", price=0.5, size=10, fok=True, time_in_force="GTC")
+    except ValueError as exc:
+        assert "fok_conflicts_with_time_in_force" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("expected ValueError for conflicting FOK configuration")
