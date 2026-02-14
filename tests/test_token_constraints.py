@@ -88,7 +88,7 @@ def test_clob_cache_updates_on_tick_size_change_event(monkeypatch) -> None:
     constraints = clob.get_token_constraints("token-a")
     assert constraints is not None
     assert constraints.tick_size == 0.01
-    assert ws.sent[0] == "{\"assets_ids\": [\"token-a\"], \"type\": \"market\"}"
+    assert ws.sent[0] == b"{\"assets_ids\": [\"token-a\"], \"type\": \"market\"}"
 
 
 def test_buy_fok_uses_metadata_min_size_when_clob_constraint_missing(tmp_path) -> None:

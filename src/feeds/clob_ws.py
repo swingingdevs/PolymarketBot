@@ -56,6 +56,8 @@ class CLOBWebSocket:
         self.token_metadata_cache: dict[str, TokenConstraints] = {}
         self._ws: websockets.WebSocketClientProtocol | None = None
         self._subscribed_token_ids: set[str] = set()
+        self._subscription_cache_token_ids: frozenset[str] | None = None
+        self._subscription_cache_payload: bytes | None = None
 
     @staticmethod
     def _build_ws_url(ws_base: str) -> str:
@@ -295,6 +297,13 @@ class CLOBWebSocket:
             tops.extend(self._parse_event(event, last_update))
         return tops
 
+    def _build_subscription_payload(self, token_ids: set[str]) -> bytes:
+        token_set = frozenset(token_ids)
+        if token_set != self._subscription_cache_token_ids:
+            self._subscription_cache_payload = json.dumps({"assets_ids": sorted(token_set), "type": "market"}).encode()
+            self._subscription_cache_token_ids = token_set
+        return self._subscription_cache_payload if self._subscription_cache_payload is not None else b""
+
     async def update_subscriptions(self, token_ids: list[str]) -> None:
         if self._ws is None:
             return
@@ -302,7 +311,7 @@ class CLOBWebSocket:
         desired = set(token_ids)
         if desired == self._subscribed_token_ids:
             return
-        await self._ws.send(json.dumps({"assets_ids": sorted(desired), "type": "market"}))
+        await self._ws.send(self._build_subscription_payload(desired))
         self._subscribed_token_ids = desired
 
     async def stream_books(self, token_ids: list[str]) -> AsyncIterator[BookTop]:
@@ -313,9 +322,9 @@ class CLOBWebSocket:
             try:
                 async with websockets.connect(self.ws_url, ping_interval=None, ping_timeout=None) as ws:
                     self._ws = ws
-                    self._subscribed_token_ids = set(token_ids)
-                    sub = {"assets_ids": token_ids, "type": "market"}
-                    await ws.send(json.dumps(sub))
+                    desired = set(token_ids)
+                    await ws.send(self._build_subscription_payload(desired))
+                    self._subscribed_token_ids = desired
                     hb_task = asyncio.create_task(self._heartbeat(ws, failed_pings))
                     last_update = [time.time()]
                     stale_task = asyncio.create_task(self._stale_watchdog(last_update, token_ids, "book"))
