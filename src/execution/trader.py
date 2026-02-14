@@ -12,7 +12,7 @@ import structlog
 
 from config import Settings
 from metrics import DAILY_REALIZED_PNL, RISK_LIMIT_BLOCKED, TRADES
-from utils.rounding import round_price_to_tick, round_size_to_step
+from utils.rounding import round_size_to_step
 
 logger = structlog.get_logger(__name__)
 
@@ -364,6 +364,18 @@ class Trader:
         self._update_risk_metrics(risk_blocked=self._risk_blocked(0.0, token_id=token_id, horizon=horizon, direction=direction))
 
     @staticmethod
+    def _normalize_buy_fok_price(ask: float, tick_size: float) -> float:
+        if tick_size <= 0:
+            raise ValueError("tick_size must be > 0")
+
+        tick_ratio = ask / tick_size
+        nearest_tick = round(tick_ratio)
+        if math.isclose(tick_ratio, nearest_tick, rel_tol=0.0, abs_tol=1e-9):
+            return ask
+
+        return round(math.ceil(tick_ratio) * tick_size, 8)
+
+    @staticmethod
     def _classify_submit_exception(exc: Exception) -> str:
         text = str(exc).lower()
         name = exc.__class__.__name__.lower()
@@ -381,7 +393,7 @@ class Trader:
     async def buy_fok(self, token_id: str, ask: float, horizon: str) -> bool:
         size = self.settings.quote_size_usd / ask
         size = round_size_to_step(size, 0.1)
-        px = round_price_to_tick(ask, 0.001)
+        px = self._normalize_buy_fok_price(ask, 0.001)
 
         notional = size * px
         if not self._check_risk(notional, token_id=token_id, horizon=horizon, direction="BUY"):
