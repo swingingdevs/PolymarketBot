@@ -36,15 +36,16 @@ class TokenConstraints:
 class CLOBWebSocket:
     def __init__(
         self,
-        ws_url: str,
-        ping_interval: int = 30,
+        ws_base: str,
+        ping_interval: int = 10,
         pong_timeout: int = 10,
         reconnect_delay_min: int = 1,
         reconnect_delay_max: int = 60,
         book_staleness_threshold: float = 10,
         stale_after_seconds: float | None = None,
     ) -> None:
-        self.ws_url = ws_url
+        self.ws_base = ws_base.rstrip("/")
+        self.ws_url = f"{self.ws_base}/ws/market"
         self.ping_interval = ping_interval
         self.pong_timeout = pong_timeout
         self.reconnect_delay_min = reconnect_delay_min
@@ -99,8 +100,7 @@ class CLOBWebSocket:
         while True:
             await asyncio.sleep(self.ping_interval)
             try:
-                pong = await ws.ping()
-                await asyncio.wait_for(pong, timeout=self.pong_timeout)
+                await ws.send("PING")
                 failed_pings[0] = 0
             except Exception:
                 failed_pings[0] += 1
@@ -135,28 +135,21 @@ class CLOBWebSocket:
         if not isinstance(levels, list) or not levels:
             return None, None
         top = levels[0]
+        if not isinstance(top, dict):
+            return None, None
         try:
-            if isinstance(top, dict):
-                return float(top.get("price")), float(top.get("size"))
-            if isinstance(top, list) and len(top) >= 2:
-                return float(top[0]), float(top[1])
+            return float(top.get("price")), float(top.get("size"))
         except (TypeError, ValueError):
             return None, None
-        return None, None
 
     async def update_subscriptions(self, token_ids: list[str]) -> None:
         if self._ws is None:
             return
 
         desired = set(token_ids)
-        added = sorted(desired - self._subscribed_token_ids)
-        removed = sorted(self._subscribed_token_ids - desired)
-
-        if removed:
-            await self._ws.send(json.dumps({"assets_ids": removed, "type": "market", "operation": "unsubscribe"}))
-        if added:
-            await self._ws.send(json.dumps({"assets_ids": added, "type": "market", "operation": "subscribe"}))
-
+        if desired == self._subscribed_token_ids:
+            return
+        await self._ws.send(json.dumps({"assets_ids": sorted(desired), "type": "market"}))
         self._subscribed_token_ids = desired
 
     async def stream_books(self, token_ids: list[str]) -> AsyncIterator[BookTop]:
@@ -178,32 +171,70 @@ class CLOBWebSocket:
                         while True:
                             raw = await ws.recv() if hasattr(ws, "recv") else await ws.__anext__()
                             data = json.loads(raw)
-                            token_id = str(data.get("asset_id") or data.get("token_id") or "")
-                            self._update_token_constraints(
-                                token_id,
-                                min_order_size=data.get("min_order_size"),
-                                tick_size=data.get("tick_size"),
-                            )
-                            if data.get("event_type") != "book":
+                            if isinstance(data, list):
+                                events = [e for e in data if isinstance(e, dict)]
+                            elif isinstance(data, dict):
+                                events = [data]
+                            else:
                                 continue
-                            bids = data.get("bids", [])
-                            asks = data.get("asks", [])
-                            bid, bid_size = self._extract_price_size(bids)
-                            ask, ask_size = self._extract_price_size(asks)
-                            fill_prob = data.get("fill_prob")
-                            if fill_prob is not None:
-                                fill_prob = float(fill_prob)
-                            ts = normalize_ts(data.get("timestamp", time.time()))
-                            last_update[0] = time.time()
-                            yield BookTop(
-                                token_id=token_id,
-                                best_bid=bid,
-                                best_ask=ask,
-                                best_bid_size=bid_size,
-                                best_ask_size=ask_size,
-                                fill_prob=fill_prob,
-                                ts=ts,
-                            )
+
+                            for event in events:
+                                token_id = str(event.get("asset_id") or event.get("token_id") or "")
+                                if event.get("event_type") == "tick_size_change":
+                                    self._update_token_constraints(token_id, tick_size=event.get("new_tick_size", event.get("tick_size")))
+                                    continue
+
+                                if event.get("event_type") == "book":
+                                    bids = event.get("bids", [])
+                                    asks = event.get("asks", [])
+                                    bid, bid_size = self._extract_price_size(bids)
+                                    ask, ask_size = self._extract_price_size(asks)
+                                    fill_prob = event.get("fill_prob")
+                                    if fill_prob is not None:
+                                        fill_prob = float(fill_prob)
+                                    ts = normalize_ts(event.get("timestamp", time.time()))
+                                    last_update[0] = time.time()
+                                    yield BookTop(
+                                        token_id=token_id,
+                                        best_bid=bid,
+                                        best_ask=ask,
+                                        best_bid_size=bid_size,
+                                        best_ask_size=ask_size,
+                                        fill_prob=fill_prob,
+                                        ts=ts,
+                                    )
+                                    continue
+
+                                if event.get("event_type") != "price_change":
+                                    continue
+
+                                changes = event.get("changes")
+                                if isinstance(changes, dict):
+                                    changes = [changes]
+                                if not isinstance(changes, list):
+                                    continue
+
+                                outer_ts = event.get("timestamp", time.time())
+                                for change in changes:
+                                    if not isinstance(change, dict):
+                                        continue
+                                    change_token = str(change.get("asset_id") or change.get("token_id") or token_id)
+                                    bid = self._coerce_positive_float(change.get("best_bid"))
+                                    ask = self._coerce_positive_float(change.get("best_ask"))
+                                    bid_size = self._coerce_positive_float(change.get("best_bid_size"))
+                                    ask_size = self._coerce_positive_float(change.get("best_ask_size"))
+                                    if bid is None and ask is None:
+                                        continue
+                                    ts = normalize_ts(change.get("timestamp", outer_ts))
+                                    last_update[0] = time.time()
+                                    yield BookTop(
+                                        token_id=change_token,
+                                        best_bid=bid,
+                                        best_ask=ask,
+                                        best_bid_size=bid_size,
+                                        best_ask_size=ask_size,
+                                        ts=ts,
+                                    )
 
                             backoff = self.reconnect_delay_min
                     finally:

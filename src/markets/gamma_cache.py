@@ -85,6 +85,7 @@ class GammaCache:
     @classmethod
     def _extract_token_metadata(cls, row: dict[str, object], token_id: str) -> TokenMetadata:
         tick_size: float | None = None
+        min_order_size: float | None = None
         fee_rate_bps: float | None = None
 
         def first_float(payload: dict[str, object], keys: tuple[str, ...]) -> float | None:
@@ -96,7 +97,8 @@ class GammaCache:
                     return parsed
             return None
 
-        global_tick = first_float(row, ("minimum_tick_size", "minTickSize", "tickSize", "tick_size"))
+        global_tick = first_float(row, ("orderPriceMinTickSize", "minimum_tick_size", "minTickSize", "tickSize", "tick_size"))
+        global_min_size = first_float(row, ("orderMinSize", "minimum_order_size", "minOrderSize", "min_order_size"))
         global_fee = first_float(row, ("fee_rate_bps", "takerFeeBps", "taker_fee_bps", "baseFeeRateBps"))
 
         token_containers = []
@@ -118,17 +120,21 @@ class GammaCache:
             if candidate_token_id != token_id:
                 continue
 
-            token_tick = first_float(candidate, ("minimum_tick_size", "minTickSize", "tickSize", "tick_size"))
+            token_tick = first_float(candidate, ("orderPriceMinTickSize", "minimum_tick_size", "minTickSize", "tickSize", "tick_size"))
+            token_min_size = first_float(candidate, ("orderMinSize", "minimum_order_size", "minOrderSize", "min_order_size"))
             token_fee = first_float(candidate, ("fee_rate_bps", "takerFeeBps", "taker_fee_bps", "baseFeeRateBps"))
             tick_size = token_tick if token_tick is not None else tick_size
+            min_order_size = token_min_size if token_min_size is not None else min_order_size
             fee_rate_bps = token_fee if token_fee is not None else fee_rate_bps
 
         if tick_size is None:
             tick_size = global_tick
+        if min_order_size is None:
+            min_order_size = global_min_size
         if fee_rate_bps is None:
             fee_rate_bps = global_fee
 
-        return TokenMetadata(tick_size=tick_size, fee_rate_bps=fee_rate_bps)
+        return TokenMetadata(tick_size=tick_size, min_order_size=min_order_size, fee_rate_bps=fee_rate_bps)
 
     async def get_market(self, horizon_minutes: int, start_epoch: int) -> UpDownMarket:
         slug = build_slug(horizon_minutes, start_epoch)

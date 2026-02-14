@@ -11,6 +11,7 @@ logger = structlog.get_logger(__name__)
 @dataclass(slots=True)
 class TokenMetadata:
     tick_size: float | None = None
+    min_order_size: float | None = None
     fee_rate_bps: float | None = None
 
 
@@ -55,9 +56,19 @@ class TokenMetadataCache:
         logger.debug("token_tick_size_fallback", token_id=token_id, fallback_tick_size=fallback_tick_size)
         return fallback_tick_size
 
+    def get_min_order_size(self, token_id: str, fallback_min_order_size: float) -> float:
+        metadata = self.get(token_id, allow_stale=True)
+        if metadata and metadata.min_order_size is not None and metadata.min_order_size > 0:
+            return metadata.min_order_size
+        logger.debug("token_min_order_size_fallback", token_id=token_id, fallback_min_order_size=fallback_min_order_size)
+        return fallback_min_order_size
+
     def get_fee_rate_bps(self, token_id: str, fallback_fee_bps: float) -> float:
         metadata = self.get(token_id, allow_stale=True)
         if metadata and metadata.fee_rate_bps is not None and metadata.fee_rate_bps >= 0:
             return metadata.fee_rate_bps
         logger.debug("token_fee_rate_fallback", token_id=token_id, fallback_fee_bps=fallback_fee_bps)
         return fallback_fee_bps
+
+
+    
