@@ -179,18 +179,18 @@ class _CaptureClient:
         self.limit_order_args: dict[str, object] | None = None
         self.posted_order: dict[str, object] | None = None
 
-    def create_limit_order(self, **kwargs):
-        self.limit_order_args = kwargs
-        return kwargs
+    def create_order(self, order_args):
+        self.limit_order_args = dict(order_args.__dict__)
+        return self.limit_order_args
 
-    def post_order(self, order, time_in_force="FOK"):
-        self.posted_order = {"order": order, "time_in_force": time_in_force}
+    def post_order(self, order, orderType="GTC"):
+        self.posted_order = {"order": order, "orderType": orderType}
         return {"fills": [{"price": order.get("price", 0.0) or 0.0, "size": order["size"]}]}
 
 
 def test_buy_fok_uses_limit_order_api(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setattr(Settings, "settings_profile", "paper", raising=False)
-    settings = Settings(dry_run=False, risk_state_path=str(tmp_path / "risk_state.json"), quote_size_usd=10)
+    settings = Settings(dry_run=False, risk_state_path=str(tmp_path / "risk_state.json"), quote_size_usd=10, enable_fee_rate=False)
     trader = Trader(settings)
     trader.client = _CaptureClient()
     trader._live_auth_ready = True
@@ -201,14 +201,14 @@ def test_buy_fok_uses_limit_order_api(monkeypatch: pytest.MonkeyPatch, tmp_path)
     asyncio.run(_run())
     assert trader.client.limit_order_args is not None
     assert trader.client.limit_order_args["token_id"] == "token-a"
-    assert trader.client.limit_order_args["time_in_force"] == "FOK"
+    assert trader.client.limit_order_args["fee_rate_bps"] >= 0
     assert trader.client.posted_order is not None
-    assert trader.client.posted_order["time_in_force"] == "FOK"
+    assert trader.client.posted_order["orderType"] == "FOK"
 
 
 def test_buy_fok_limit_order_requests_fok_for_every_submit(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setattr(Settings, "settings_profile", "paper", raising=False)
-    settings = Settings(dry_run=False, risk_state_path=str(tmp_path / "risk_state.json"), quote_size_usd=10)
+    settings = Settings(dry_run=False, risk_state_path=str(tmp_path / "risk_state.json"), quote_size_usd=10, enable_fee_rate=False)
     trader = Trader(settings)
     trader.client = _CaptureClient()
     trader._live_auth_ready = True
@@ -220,7 +220,7 @@ def test_buy_fok_limit_order_requests_fok_for_every_submit(monkeypatch: pytest.M
         for ask in asks:
             assert await trader.buy_fok("token-a", ask=ask, horizon="5") is True
             assert trader.client.posted_order is not None
-            submitted_tifs.append(str(trader.client.posted_order["time_in_force"]))
+            submitted_tifs.append(str(trader.client.posted_order["orderType"]))
 
     asyncio.run(_run())
     assert submitted_tifs == ["FOK", "FOK", "FOK"]
@@ -228,7 +228,7 @@ def test_buy_fok_limit_order_requests_fok_for_every_submit(monkeypatch: pytest.M
 
 def test_buy_fok_best_ask_0983_with_tick_0001_never_submits_0982(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setattr(Settings, "settings_profile", "paper", raising=False)
-    settings = Settings(dry_run=False, risk_state_path=str(tmp_path / "risk_state.json"), quote_size_usd=10)
+    settings = Settings(dry_run=False, risk_state_path=str(tmp_path / "risk_state.json"), quote_size_usd=10, enable_fee_rate=False)
     trader = Trader(settings)
     trader.client = _CaptureClient()
     trader._live_auth_ready = True
@@ -244,7 +244,7 @@ def test_buy_fok_best_ask_0983_with_tick_0001_never_submits_0982(monkeypatch: py
 
 def test_buy_fok_honors_non_default_tick_size(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setattr(Settings, "settings_profile", "paper", raising=False)
-    settings = Settings(dry_run=False, risk_state_path=str(tmp_path / "risk_state.json"), quote_size_usd=10)
+    settings = Settings(dry_run=False, risk_state_path=str(tmp_path / "risk_state.json"), quote_size_usd=10, enable_fee_rate=False)
     trader = Trader(settings)
     trader.client = _CaptureClient()
     trader._live_auth_ready = True

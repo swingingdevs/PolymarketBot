@@ -14,11 +14,13 @@ def test_trader_persists_and_reloads_risk_state(tmp_path):
     trader = Trader(settings)
     trader.risk.daily_realized_pnl = -12.5
     trader.risk.trades_this_hour = 3
+    trader.risk.last_trade_ts = 1234.5
     trader._persist_risk_state()
 
     reloaded = Trader(settings)
     assert reloaded.risk.daily_realized_pnl == -12.5
     assert reloaded.risk.trades_this_hour == 3
+    assert reloaded.risk.last_trade_ts == 1234.5
 
 
 def test_trader_resets_daily_pnl_on_utc_rollover(tmp_path):
@@ -226,3 +228,68 @@ def test_cooldown_blocks_risk_checks_after_consecutive_losses(tmp_path):
 
     assert trader.risk.cooldown_until_ts > 0
     assert trader._check_risk(5.0, token_id="token-c", horizon="5m", direction="BUY") is False
+
+
+def test_trade_interval_blocks_second_trade_inside_window(tmp_path, monkeypatch):
+    settings = Settings(
+        dry_run=True,
+        risk_state_path=str(tmp_path / "risk_state.json"),
+        min_trade_interval_seconds=300,
+        max_trades_per_hour=10,
+    )
+    trader = Trader(settings)
+
+    now = {"ts": 1000.0}
+    monkeypatch.setattr("execution.trader.time.time", lambda: now["ts"])
+
+    assert trader._check_risk(5.0, token_id="token-a", horizon="5m", direction="BUY") is True
+    trader._record_post_trade_updates(
+        {"fills": [{"price": 0.5, "size": 10}]},
+        token_id="token-a",
+        horizon="5m",
+        direction="BUY",
+        fallback_notional_usd=5.0,
+    )
+
+    now["ts"] = 1100.0
+    assert trader._check_risk(5.0, token_id="token-b", horizon="5m", direction="BUY") is False
+
+
+def test_trade_interval_allows_trade_after_window(tmp_path, monkeypatch):
+    settings = Settings(
+        dry_run=True,
+        risk_state_path=str(tmp_path / "risk_state.json"),
+        min_trade_interval_seconds=300,
+        max_trades_per_hour=10,
+    )
+    trader = Trader(settings)
+
+    now = {"ts": 2000.0}
+    monkeypatch.setattr("execution.trader.time.time", lambda: now["ts"])
+
+    trader._record_post_trade_updates(
+        {"fills": [{"price": 0.5, "size": 10}]},
+        token_id="token-a",
+        horizon="5m",
+        direction="BUY",
+        fallback_notional_usd=5.0,
+    )
+
+    now["ts"] = 2301.0
+    assert trader._check_risk(5.0, token_id="token-b", horizon="5m", direction="BUY") is True
+
+
+def test_hourly_cap_still_blocks_independent_of_trade_interval(tmp_path):
+    settings = Settings(
+        dry_run=True,
+        risk_state_path=str(tmp_path / "risk_state.json"),
+        min_trade_interval_seconds=300,
+        max_trades_per_hour=1,
+    )
+    trader = Trader(settings)
+
+    trader.risk.last_trade_hour = datetime.now(timezone.utc).hour
+    trader.risk.trades_this_hour = 1
+    trader.risk.last_trade_ts = 0.0
+
+    assert trader._check_risk(5.0, token_id="token-a", horizon="5m", direction="BUY") is False
