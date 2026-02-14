@@ -34,6 +34,29 @@ class GammaCache:
         self._cache: dict[str, tuple[UpDownMarket, int]] = {}
         self._hits = 0
         self._misses = 0
+        self._session: aiohttp.ClientSession | None = None
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession()
+        return self._session
+
+    async def close(self) -> None:
+        if self._session is not None and not self._session.closed:
+            await self._session.close()
+        self._session = None
+
+    def __del__(self) -> None:
+        session = self._session
+        if session is None or session.closed:
+            return
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        loop.create_task(session.close())
 
     @staticmethod
     def _validate_market_row(row: dict[str, object], slug: str, horizon_minutes: int, start_epoch: int) -> None:
@@ -152,10 +175,10 @@ class GammaCache:
         params = {"slug": slug}
 
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, params=params, timeout=10) as response:
-                    response.raise_for_status()
-                    rows = await response.json()
+            session = await self._get_session()
+            async with session.get(url, params=params, timeout=10) as response:
+                response.raise_for_status()
+                rows = await response.json()
         except asyncio.TimeoutError as exc:
             raise RuntimeError("Gamma API timeout") from exc
         except aiohttp.ClientResponseError as exc:

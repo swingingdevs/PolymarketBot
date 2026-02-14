@@ -448,11 +448,18 @@ async def orchestrate() -> None:
                 await asyncio.sleep(backoff)
                 backoff = min(60.0, backoff * 2)
 
-    await asyncio.gather(
-        run_resilient("consume_rtds", consume_rtds),
-        run_resilient("consume_clob", consume_clob),
-        run_resilient("monitor_rtds_staleness", monitor_rtds_staleness),
-    )
+    try:
+        await asyncio.gather(
+            run_resilient("consume_rtds", consume_rtds),
+            run_resilient("consume_clob", consume_clob),
+            run_resilient("monitor_rtds_staleness", monitor_rtds_staleness),
+        )
+    finally:
+        if fallback_task and not fallback_task.done():
+            fallback_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await fallback_task
+        await gamma.close()
 
 
 if __name__ == "__main__":
