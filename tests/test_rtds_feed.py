@@ -98,9 +98,9 @@ def test_rtds_subscribe_both_topics_and_timestamp_normalization(monkeypatch: pyt
     subscribe = json.loads(ws.sent_payloads[0])
     assert subscribe["action"] == "subscribe"
     topics = [item["topic"] for item in subscribe["subscriptions"]]
-    assert topics == ["crypto_prices_chainlink", "crypto_prices"]
+    assert topics == ["crypto_prices_chainlink"]
+    assert subscribe["subscriptions"][0]["type"] == "*"
     for sub in subscribe["subscriptions"]:
-        assert sub["type"] == "market"
         assert json.loads(sub["filters"]) == {"symbol": "btc/usd"}
 
 

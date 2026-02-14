@@ -78,10 +78,10 @@ python -m main
 
 ```env
 RTDS_WS_URL=wss://ws-live-data.polymarket.com
-CLOB_WS_URL=wss://ws-subscriptions-clob.polymarket.com/ws/
+CLOB_WS_BASE=wss://ws-subscriptions-clob.polymarket.com
 GAMMA_API_URL=https://gamma-api.polymarket.com
 
-SYMBOL=BTC/USD
+SYMBOL=btc/usd
 WATCH_RETURN_THRESHOLD=0.005
 HAMMER_SECS=15
 D_MIN=5

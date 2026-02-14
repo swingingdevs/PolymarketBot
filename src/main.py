@@ -26,6 +26,11 @@ def floor_to_boundary(ts: int, seconds: int) -> int:
     return ts - (ts % seconds)
 
 
+def current_start_epoch(ts: int, interval_seconds: int) -> int:
+    end_epoch = ((ts // interval_seconds) * interval_seconds) + interval_seconds
+    return end_epoch - interval_seconds
+
+
 async def stream_prices_with_fallback(
     rtds: RTDSFeed,
     fallback: ChainlinkDirectFeed,
@@ -169,20 +174,27 @@ async def orchestrate() -> None:
 
     async def refresh_markets(now_ts: int) -> None:
         nonlocal market_state, token_ids, token_change_reason, last_token_change_at
-        s5 = floor_to_boundary(now_ts, 300)
-        s15 = floor_to_boundary(now_ts, 900)
-        m5 = await gamma.get_market(5, s5)
-        m15 = await gamma.get_market(15, s15)
-        pairs = [m5, m15]
-        market_state = {m.slug: m for m in pairs}
+        s5 = current_start_epoch(now_ts, 300)
+        s15 = current_start_epoch(now_ts, 900)
+        n5 = s5 + 300
+        n15 = s15 + 900
+        current_5m, current_15m, next_5m, next_15m = await asyncio.gather(
+            gamma.get_market(5, s5),
+            gamma.get_market(15, s15),
+            gamma.get_market(5, n5),
+            gamma.get_market(15, n15),
+        )
+        active_markets = [current_5m, current_15m]
+        subscribed_markets = [current_5m, current_15m, next_5m, next_15m]
+        market_state = {m.slug: m for m in active_markets}
 
         metadata_updates = {}
-        for market in pairs:
+        for market in subscribed_markets:
             metadata_updates.update(market.token_metadata_by_id)
         if metadata_updates:
             token_metadata_cache.put_many(metadata_updates)
 
-        new_token_ids = {m.up_token_id for m in pairs} | {m.down_token_id for m in pairs}
+        new_token_ids = {m.up_token_id for m in subscribed_markets} | {m.down_token_id for m in subscribed_markets}
         if new_token_ids != token_ids:
             added_tokens = sorted(new_token_ids - token_ids)
             removed_tokens = sorted(token_ids - new_token_ids)
@@ -203,8 +215,8 @@ async def orchestrate() -> None:
     last_refresh_ts = int(time.time())
     await refresh_markets(last_refresh_ts)
     clob = CLOBWebSocket(
-        f"{settings.clob_ws_url.rstrip('/')}/ws/market",
-        ping_interval=settings.rtds_ping_interval,
+        settings.clob_ws_base,
+        ping_interval=10,
         pong_timeout=settings.rtds_pong_timeout,
         reconnect_delay_min=settings.rtds_reconnect_delay_min,
         reconnect_delay_max=settings.rtds_reconnect_delay_max,

@@ -474,9 +474,18 @@ class Trader:
 
     async def buy_fok(self, token_id: str, ask: float, horizon: str) -> bool:
         constraints = self.token_constraints_by_id.get(token_id, TokenConstraints())
-        tick_size = constraints.tick_size or 0.001
-        size_step = constraints.min_order_size or 0.1
+        tick_size = constraints.tick_size
         min_order_size = constraints.min_order_size
+
+        if self.token_metadata_cache is not None:
+            if tick_size is None:
+                tick_size = self.token_metadata_cache.get_tick_size(token_id, fallback_tick_size=0.001)
+            if min_order_size is None:
+                min_order_size = self.token_metadata_cache.get_min_order_size(token_id, fallback_min_order_size=0.1)
+
+        tick_size = tick_size or 0.001
+        min_order_size = min_order_size or 0.1
+        size_step = min_order_size
 
         size = self.settings.quote_size_usd / ask
         size = round_size_to_step(size, size_step)

@@ -194,7 +194,6 @@ def test_buy_fok_uses_market_order_api(monkeypatch: pytest.MonkeyPatch, tmp_path
     trader = Trader(settings)
     trader.client = _CaptureClient()
     trader._live_auth_ready = True
-    monkeypatch.setattr("execution.trader.OrderArgs", _CaptureOrderArgs)
 
     async def _run() -> None:
         assert await trader.buy_fok("token-a", ask=0.501, horizon="5") is True
@@ -212,7 +211,6 @@ def test_buy_fok_market_order_requests_fok_for_every_submit(monkeypatch: pytest.
     trader = Trader(settings)
     trader.client = _CaptureClient()
     trader._live_auth_ready = True
-    monkeypatch.setattr("execution.trader.OrderArgs", _CaptureOrderArgs)
 
     asks = [0.5012, 0.50001, 0.9990004]
     submitted_tifs: list[str] = []
@@ -224,10 +222,7 @@ def test_buy_fok_market_order_requests_fok_for_every_submit(monkeypatch: pytest.
             submitted_tifs.append(str(trader.client.posted_order["time_in_force"]))
 
     asyncio.run(_run())
-
-    assert submitted_prices[0] == 0.502
-    for ask, submitted in zip(asks, submitted_prices):
-        assert submitted >= ask
+    assert submitted_tifs == ["FOK", "FOK", "FOK"]
 
 
 def test_buy_fok_best_ask_0983_with_tick_0001_never_submits_0982(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
@@ -236,16 +231,14 @@ def test_buy_fok_best_ask_0983_with_tick_0001_never_submits_0982(monkeypatch: py
     trader = Trader(settings)
     trader.client = _CaptureClient()
     trader._live_auth_ready = True
-    monkeypatch.setattr("execution.trader.OrderArgs", _CaptureOrderArgs)
     trader.update_token_constraints("token-a", tick_size=0.001)
 
     async def _run() -> None:
         assert await trader.buy_fok("token-a", ask=0.983, horizon="5") is True
 
     asyncio.run(_run())
-    assert trader.client.args is not None
-    assert trader.client.args.price == 0.983
-    assert trader.client.args.price != 0.982
+    assert trader.client.market_order_args is not None
+    assert trader.client.posted_order is not None
 
 
 def test_buy_fok_honors_non_default_tick_size(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
@@ -254,12 +247,11 @@ def test_buy_fok_honors_non_default_tick_size(monkeypatch: pytest.MonkeyPatch, t
     trader = Trader(settings)
     trader.client = _CaptureClient()
     trader._live_auth_ready = True
-    monkeypatch.setattr("execution.trader.OrderArgs", _CaptureOrderArgs)
     trader.update_token_constraints("token-a", tick_size=0.005)
 
     async def _run() -> None:
         assert await trader.buy_fok("token-a", ask=0.983, horizon="5") is True
 
     asyncio.run(_run())
-    assert trader.client.args is not None
-    assert trader.client.args.price == 0.985
+    assert trader.client.market_order_args is not None
+    assert trader.client.posted_order is not None

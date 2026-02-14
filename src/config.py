@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     rtds_ws_url: str = "wss://ws-live-data.polymarket.com"
-    clob_ws_url: str = "wss://ws-subscriptions-clob.polymarket.com"
+    clob_ws_base: str = "wss://ws-subscriptions-clob.polymarket.com"
     gamma_api_url: HttpUrl = "https://gamma-api.polymarket.com"
 
     symbol: str = "btc/usd"
