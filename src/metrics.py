@@ -47,6 +47,12 @@ DAILY_REALIZED_PNL = Gauge("bot_daily_realized_pnl_usd", "Daily realized PnL in 
 RISK_LIMIT_BLOCKED = Gauge("bot_risk_limit_blocked", "1 if trading is blocked by risk limits")
 KILL_SWITCH_ACTIVE = Gauge("bot_kill_switch_active", "1 if divergence kill-switch is active")
 FEED_BLOCKED_STALE_PRICE = Gauge("feed_blocked_stale_price", "1 if stale price feed is currently blocking trading")
+TRADING_ALLOWED = Gauge("bot_trading_allowed", "1 if quorum allows trading")
+ORACLE_SPOT_DIVERGENCE_PCT = Gauge(
+    "bot_oracle_spot_divergence_pct",
+    "Observed oracle vs spot quorum divergence percentage",
+)
+FEED_LAG_SECONDS = Gauge("bot_feed_lag_seconds", "Per-feed data lag in seconds", ["feed"])
 
 
 def start_metrics_server(host: str, port: int) -> None:
