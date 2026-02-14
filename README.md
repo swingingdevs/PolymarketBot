@@ -78,7 +78,7 @@ python -m main
 
 ```env
 RTDS_WS_URL=wss://ws-live-data.polymarket.com
-CLOB_WS_BASE=wss://ws-subscriptions-clob.polymarket.com
+CLOB_WS_URL=wss://ws-subscriptions-clob.polymarket.com
 GAMMA_API_URL=https://gamma-api.polymarket.com
 
 SYMBOL=btc/usd
@@ -222,7 +222,7 @@ server {
 Common values:
 
 - `RTDS_WS_URL`
-- `CLOB_WS_BASE`
+- `CLOB_WS_URL`
 - `SYMBOL`
 - `DRY_RUN`
 - `WATCH_RETURN_THRESHOLD`

@@ -92,7 +92,7 @@ def test_clob_cache_updates_on_tick_size_change_event(monkeypatch) -> None:
     assert orjson.loads(ws.sent[0]) == {"assets_ids": ["token-a"], "type": "market"}
 
 
-def test_buy_fok_uses_metadata_min_size_when_clob_constraint_missing(tmp_path) -> None:
+def test_buy_fok_uses_default_min_size_when_clob_constraint_missing(tmp_path) -> None:
     settings = Settings(
         dry_run=True,
         quote_size_usd=0.2,
@@ -107,7 +107,7 @@ def test_buy_fok_uses_metadata_min_size_when_clob_constraint_missing(tmp_path) -
 
     assert ok is True
     assert trader.risk.trades_this_hour == 1
-    assert trader.risk.total_open_notional_usd == 0.6
+    assert trader.risk.total_open_notional_usd == 0.2
 
 
 def test_buy_fok_prefers_clob_min_size_over_metadata(tmp_path) -> None:

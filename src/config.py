@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field, HttpUrl, model_validator
+from pydantic import AliasChoices, Field, HttpUrl, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -42,7 +42,10 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     rtds_ws_url: str = "wss://ws-live-data.polymarket.com"
-    clob_ws_base: str = "wss://ws-subscriptions-clob.polymarket.com"
+    clob_ws_url: str = Field(
+        default="wss://ws-subscriptions-clob.polymarket.com",
+        validation_alias=AliasChoices("clob_ws_url", "clob_ws_base", "CLOB_WS_URL", "CLOB_WS_BASE"),
+    )
     gamma_api_url: HttpUrl = "https://gamma-api.polymarket.com"
 
     symbol: str = "btc/usd"

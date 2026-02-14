@@ -263,7 +263,7 @@ async def orchestrate() -> None:
     last_refresh_ts = int(time.time())
     await refresh_markets(last_refresh_ts)
     clob = CLOBWebSocket(
-        settings.clob_ws_base,
+        settings.clob_ws_url,
         ping_interval=10,
         pong_timeout=settings.rtds_pong_timeout,
         reconnect_delay_min=settings.rtds_reconnect_delay_min,
@@ -449,11 +449,10 @@ async def orchestrate() -> None:
                 backoff = min(60.0, backoff * 2)
 
     try:
-        await asyncio.gather(
-            run_resilient("consume_rtds", consume_rtds),
-            run_resilient("consume_clob", consume_clob),
-            run_resilient("monitor_rtds_staleness", monitor_rtds_staleness),
-        )
+        async with asyncio.TaskGroup() as tg:
+            tg.create_task(run_resilient("consume_rtds", consume_rtds))
+            tg.create_task(run_resilient("consume_clob", consume_clob))
+            tg.create_task(run_resilient("monitor_rtds_staleness", monitor_rtds_staleness))
     finally:
         if fallback_task and not fallback_task.done():
             fallback_task.cancel()
