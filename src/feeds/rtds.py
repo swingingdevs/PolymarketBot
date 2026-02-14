@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import time
 from typing import AsyncIterator
 
+import orjson
 import structlog
 import websockets
 
@@ -43,6 +43,20 @@ class RTDSFeed:
         self.price_staleness_threshold = price_staleness_threshold
         self.log_price_comparison = log_price_comparison
 
+        normalized_symbol = self.symbol.lower()
+        encoded_filters = json.dumps({"symbol": normalized_symbol})
+        self._subscription_bytes_by_symbol: dict[str, bytes] = {
+            normalized_symbol: json.dumps(
+                {
+                    "action": "subscribe",
+                    "subscriptions": [
+                        {"topic": self.topic, "type": "*", "filters": encoded_filters},
+                        {"topic": self.spot_topic, "type": "*", "filters": encoded_filters},
+                    ],
+                }
+            ).encode()
+        }
+
         self._last_price_ts: float = 0.0
         self._latest_by_topic_symbol: dict[tuple[str, str], tuple[float, float]] = {}
 
@@ -69,7 +83,7 @@ class RTDSFeed:
         while True:
             failed_pings = [0]
             stable_since: float | None = None
-            stability_met = False
+            backoff_reset = False
             try:
                 async with websockets.connect(self.ws_url, ping_interval=None, ping_timeout=None) as ws:
                     sub = {
@@ -78,16 +92,16 @@ class RTDSFeed:
                             {
                                 "topic": self.topic,
                                 "type": "*",
-                                "filters": json.dumps({"symbol": normalized_symbol}),
+                                "filters": orjson.dumps({"symbol": normalized_symbol}).decode("utf-8"),
                             },
                             {
                                 "topic": self.spot_topic,
                                 "type": "*",
-                                "filters": json.dumps({"symbol": normalized_symbol}),
+                                "filters": orjson.dumps({"symbol": normalized_symbol}).decode("utf-8"),
                             },
                         ],
                     }
-                    await ws.send(json.dumps(sub))
+                    await ws.send(orjson.dumps(sub))
                     logger.info("rtds_subscribed", subscription=sub)
                     stable_since = time.time()
                     hb_task = asyncio.create_task(self._heartbeat(ws, failed_pings))
@@ -95,14 +109,14 @@ class RTDSFeed:
                     try:
                         async for message in ws:
                             if (
-                                not stability_met
+                                not backoff_reset
                                 and stable_since is not None
                                 and (time.time() - stable_since) >= self.reconnect_stability_duration
                             ):
                                 backoff = self.reconnect_delay_min
-                                stability_met = True
+                                backoff_reset = True
 
-                            data = json.loads(message)
+                            data = orjson.loads(message)
                             payload = data.get("payload", {})
                             payload_symbol = str(payload.get("symbol", "")).lower()
                             if payload_symbol != normalized_symbol:
@@ -123,10 +137,6 @@ class RTDSFeed:
 
                             if topic != self.topic:
                                 continue
-
-                            if not stability_met:
-                                backoff = self.reconnect_delay_min
-                                stability_met = True
 
                             metadata: dict[str, object] = {
                                 "source": "chainlink_rtds",

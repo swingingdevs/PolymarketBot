@@ -143,3 +143,80 @@ def test_on_price_uses_configured_price_stale_after_seconds(monkeypatch: pytest.
     sm.on_price(100.0, 50000.0, metadata={"source": "chainlink_rtds", "timestamp": 100.0})
 
     assert seen_thresholds == [7.5]
+
+
+def _legacy_rolling_returns(rows: list[tuple[int, float]]) -> list[float]:
+    rets: list[float] = []
+    for idx in range(1, len(rows)):
+        prev_price = rows[idx - 1][1]
+        curr_price = rows[idx][1]
+        if prev_price <= 0:
+            continue
+        rets.append((curr_price / prev_price) - 1)
+    return rets
+
+
+def _legacy_sigma1(rows: list[tuple[int, float]]) -> float:
+    if len(rows) < 61:
+        return 0.0
+    last_rows = rows[-61:]
+    rets: list[float] = []
+    for idx in range(1, len(last_rows)):
+        prev_price = last_rows[idx - 1][1]
+        curr_price = last_rows[idx][1]
+        if prev_price > 0:
+            rets.append((curr_price / prev_price) - 1)
+    if not rets:
+        return 0.0
+    mean = sum(rets) / len(rets)
+    var = sum((x - mean) ** 2 for x in rets) / max(1, len(rets) - 1)
+    return (max(var, 1e-12)) ** 0.5
+
+
+def test_rolling_aggregates_match_legacy_deterministically() -> None:
+    sm = StrategyStateMachine(
+        0.5,
+        hammer_secs=15,
+        d_min=5,
+        max_entry_price=0.97,
+        fee_bps=10,
+        rolling_window_seconds=8,
+        watch_zscore_threshold=1.0,
+        watch_mode_expiry_seconds=999,
+    )
+
+    t0 = 1_710_000_000
+    prices = [
+        100.0,
+        100.2,
+        99.8,
+        100.4,
+        99.9,
+        100.1,
+        101.0,
+        0.0,
+        100.0,
+        100.3,
+        100.7,
+        100.6,
+    ]
+
+    for idx, price in enumerate(prices):
+        ts = t0 + idx
+        sm.on_price(ts, price)
+
+        rows = list(sm.prices_1s)
+        legacy_rets = _legacy_rolling_returns(rows)
+        assert sm._rolling_returns() == pytest.approx(legacy_rets, abs=1e-15)
+
+        latest_ret = sm.rolling_returns[-1] if sm.rolling_returns else None
+        if len(legacy_rets) >= 2 and latest_ret is not None:
+            legacy_mean = sum(legacy_rets) / len(legacy_rets)
+            legacy_var = sum((x - legacy_mean) ** 2 for x in legacy_rets) / max(1, len(legacy_rets) - 1)
+            legacy_std = legacy_var**0.5
+            if legacy_std > 0:
+                legacy_z = abs((legacy_rets[-1] - legacy_mean) / legacy_std)
+                agg_z = abs((latest_ret - sm.rolling_return_stats.mean) / sm.rolling_return_stats.stddev())
+                assert agg_z == pytest.approx(legacy_z, rel=1e-12, abs=1e-12)
+
+        assert sm._sigma1() == pytest.approx(_legacy_sigma1(rows), rel=1e-12, abs=1e-12)

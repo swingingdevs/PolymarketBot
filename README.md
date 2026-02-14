@@ -156,3 +156,92 @@ Quick operator verification markers:
 - `[SMOKE] SUMMARY rtds_events=... clob_events=... candidate_found=... order_result=...`
 
 The script targets ~120 seconds runtime max and exits with a concise summary for go/no-go checks.
+
+## Streamlit operations dashboard
+
+A dedicated operations dashboard is available at `dashboard.py`.
+
+Key panels include:
+- RTDS vs spot divergence.
+- Feed staleness and heartbeat health.
+- CLOB top-of-book and depth.
+- Z-score and EV trend.
+- Exposures, orders, and fills.
+- Kill-switch and mode state.
+
+The dashboard starts a background websocket ingest worker (async loop in a thread) and pushes updates into a queue consumed by `st.session_state`.
+
+### Run locally
+
+```bash
+pip install -e .
+pip install streamlit
+streamlit run dashboard.py
+```
+
+### Replay sessions
+
+For deterministic playback visualizations, place replay CSV files in:
+
+```text
+data/replay_sessions/
+```
+
+Then select a session in the dashboard and move the playback slider.
+
+### Docker deployment
+
+Build and run:
+
+```bash
+docker build -t polymarket-bot-dashboard .
+docker run --rm -p 8501:8501 --env-file .env polymarket-bot-dashboard
+```
+
+### Reverse proxy example (Nginx)
+
+```nginx
+server {
+    listen 80;
+    server_name dashboard.example.com;
+
+    location / {
+        proxy_pass http://127.0.0.1:8501;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
+```
+
+### Environment variables for dashboard/runtime
+
+Common values:
+
+- `RTDS_WS_URL`
+- `CLOB_WS_BASE`
+- `SYMBOL`
+- `DRY_RUN`
+- `WATCH_RETURN_THRESHOLD`
+- `D_MIN`
+- `MAX_ENTRY_PRICE`
+- `FEE_BPS`
+- `HAMMER_SECS`
+- `METRICS_HOST`
+- `METRICS_PORT`
+
+### Streamlit Cloud deployment
+
+1. Push this repository to GitHub.
+2. Create a new Streamlit app.
+3. Set entrypoint to `dashboard.py`.
+4. Configure secrets/environment values in Streamlit Cloud settings.
+
+### Self-host deployment
+
+- Run the Docker image behind Nginx/Caddy/Traefik.
+- Restrict ingress with network policy and/or auth.
+- Prefer `DRY_RUN=true` for dashboards in shared environments.
