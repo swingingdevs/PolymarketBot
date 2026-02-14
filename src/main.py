@@ -9,6 +9,7 @@ import structlog
 
 from config import Settings
 from execution.trader import Trader
+from geo import check_geoblock
 from feeds.chainlink_direct import SpotLivenessFallbackFeed
 from feeds.clob_ws import BookTop, CLOBWebSocket
 from feeds.coinbase_ws import CoinbaseSpotFeed
@@ -37,6 +38,22 @@ from strategy.state_machine import StrategyStateMachine
 
 logger = structlog.get_logger(__name__)
 
+async def run_startup_geoblock_preflight(settings: Settings) -> bool:
+    blocked, country, region = await check_geoblock()
+    if blocked:
+        logger.critical(
+            "geoblock_blocked_startup",
+            country=country,
+            region=region,
+            trading_allowed=False,
+            monitor_only=not settings.geoblock_abort,
+        )
+        if settings.geoblock_abort:
+            raise SystemExit(2)
+        return False
+
+    logger.info("geoblock_preflight_ok", country=country, region=region, trading_allowed=True)
+    return True
 
 def update_quorum_metrics(decision: QuorumDecision) -> None:
     divergence_data_available = decision.divergence_data_available
@@ -169,6 +186,7 @@ async def orchestrate() -> None:
     settings = Settings()
     configure_logging()
     start_metrics_server(settings.metrics_host, settings.metrics_port)
+    geoblock_trading_allowed = await run_startup_geoblock_preflight(settings)
 
     gamma = GammaCache(str(settings.gamma_api_url))
     rtds = RTDSFeed(
@@ -350,7 +368,7 @@ async def orchestrate() -> None:
             )
 
         decision = quorum.evaluate(now=now_received)
-        update_quorum_metrics(decision)
+        update_quorum_metrics(decision, geoblock_trading_allowed=geoblock_trading_allowed)
 
         if previous_watch_mode is False and strategy.watch_mode is True and not decision.trading_allowed:
             strategy.disable_watch_mode(int(ts))
@@ -393,6 +411,16 @@ async def orchestrate() -> None:
                     token_id=best.token_id,
                     feed_mode=feed_state["mode"],
                 )
+                return
+
+            if not geoblock_trading_allowed:
+                logger.warning(
+                    "order_blocked_by_geoblock_preflight",
+                    token_id=best.token_id,
+                    monitor_only=True,
+                    recommendation="deploy in eu-west-1 when compliance allows",
+                )
+                TRADING_ALLOWED.set(0)
                 return
 
             logger.info(
@@ -467,7 +495,7 @@ async def orchestrate() -> None:
             received_ts = float(metadata.get("received_ts") or time.time())
             quorum.update_spot(feed="coinbase", price=px, payload_ts=ts, received_ts=received_ts)
             decision = quorum.evaluate(now=received_ts)
-            update_quorum_metrics(decision)
+            update_quorum_metrics(decision, geoblock_trading_allowed=geoblock_trading_allowed)
 
     async def monitor_rtds_staleness() -> None:
         nonlocal fallback_task

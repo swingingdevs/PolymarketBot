@@ -136,6 +136,7 @@ class Settings(BaseSettings):
     recorder_enabled: bool = False
     recorder_output_path: str = "artifacts/session_recording.jsonl"
     recorder_queue_maxsize: int = 10000
+    geoblock_abort: bool = True
 
     @model_validator(mode="after")
     def apply_profile_defaults(self) -> "Settings":
