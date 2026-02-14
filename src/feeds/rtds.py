@@ -146,7 +146,7 @@ class RTDSFeed:
                                 )
                     finally:
                         hb_task.cancel()
-                        with contextlib.suppress(Exception):
+                        with contextlib.suppress(asyncio.CancelledError, Exception):
                             await hb_task
 
             except Exception as exc:

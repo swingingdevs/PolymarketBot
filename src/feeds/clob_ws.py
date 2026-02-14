@@ -29,12 +29,14 @@ class CLOBWebSocket:
         pong_timeout: int = 10,
         reconnect_delay_min: int = 1,
         reconnect_delay_max: int = 60,
+        stale_after_seconds: float = 5.0,
     ) -> None:
         self.ws_url = ws_url
         self.ping_interval = ping_interval
         self.pong_timeout = pong_timeout
         self.reconnect_delay_min = reconnect_delay_min
         self.reconnect_delay_max = reconnect_delay_max
+        self.stale_after_seconds = stale_after_seconds
 
     async def _heartbeat(self, ws: websockets.WebSocketClientProtocol, failed_pings: list[int]) -> None:
         while True:
@@ -51,7 +53,6 @@ class CLOBWebSocket:
 
     async def stream_books(self, token_ids: list[str]) -> AsyncIterator[BookTop]:
         backoff = self.reconnect_delay_min
-        last_update = 0.0
 
         while True:
             failed_pings = [0]
@@ -62,7 +63,16 @@ class CLOBWebSocket:
                     hb_task = asyncio.create_task(self._heartbeat(ws, failed_pings))
 
                     try:
-                        async for raw in ws:
+                        ws_iter = ws.__aiter__()
+                        while True:
+                            try:
+                                raw = await asyncio.wait_for(ws_iter.__anext__(), timeout=self.stale_after_seconds)
+                            except asyncio.TimeoutError:
+                                logger.warning("clob_orderbook_stale", seconds_without_updates=self.stale_after_seconds)
+                                continue
+                            except StopAsyncIteration:
+                                break
+
                             data = json.loads(raw)
                             if data.get("event_type") != "book":
                                 continue
@@ -72,16 +82,11 @@ class CLOBWebSocket:
                             bid = float(bids[0][0]) if bids else None
                             ask = float(asks[0][0]) if asks else None
                             ts = float(data.get("timestamp", time.time()))
-                            last_update = time.time()
                             yield BookTop(token_id=token_id, best_bid=bid, best_ask=ask, ts=ts)
-
-                            if time.time() - last_update > 5:
-                                logger.warning("clob_orderbook_stale", seconds_without_updates=time.time() - last_update)
-
                             backoff = self.reconnect_delay_min
                     finally:
                         hb_task.cancel()
-                        with contextlib.suppress(Exception):
+                        with contextlib.suppress(asyncio.CancelledError, Exception):
                             await hb_task
             except Exception as exc:
                 logger.warning("clob_reconnect", error=str(exc), delay_seconds=backoff)

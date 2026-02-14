@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import AsyncIterator, Callable
 
 import structlog
 
 from config import Settings
 from execution.trader import Trader
 from feeds.chainlink_direct import ChainlinkDirectFeed
-from feeds.clob_ws import CLOBWebSocket
+from feeds.clob_ws import BookTop, CLOBWebSocket
 from feeds.rtds import RTDSFeed
 from logging_utils import configure_logging
 from markets.gamma_cache import GammaCache, UpDownMarket
@@ -20,6 +21,91 @@ logger = structlog.get_logger(__name__)
 
 def floor_to_boundary(ts: int, seconds: int) -> int:
     return ts - (ts % seconds)
+
+
+async def stream_prices_with_fallback(
+    rtds: RTDSFeed,
+    fallback: ChainlinkDirectFeed,
+    *,
+    use_fallback_feed: bool,
+    price_staleness_threshold: float,
+) -> AsyncIterator[tuple[float, float, dict[str, object]]]:
+    """Yield RTDS prices and temporarily fall back when RTDS stalls."""
+    rtds_iter = rtds.stream_prices().__aiter__()
+    fallback_iter = fallback.stream_prices().__aiter__()
+    rtds_task = asyncio.create_task(rtds_iter.__anext__())
+    fallback_task: asyncio.Task[tuple[float, float, dict[str, object]]] | None = None
+    using_fallback = False
+
+    while True:
+        if not using_fallback:
+            done, _pending = await asyncio.wait({rtds_task}, timeout=price_staleness_threshold)
+            if rtds_task in done:
+                item = rtds_task.result()
+                yield item
+                rtds_task = asyncio.create_task(rtds_iter.__anext__())
+            else:
+                if not use_fallback_feed:
+                    continue
+                logger.warning("switching_to_chainlink_direct_fallback")
+                using_fallback = True
+                if fallback_task is None:
+                    fallback_task = asyncio.create_task(fallback_iter.__anext__())
+            continue
+
+        if fallback_task is None:
+            await asyncio.wait({rtds_task}, return_when=asyncio.ALL_COMPLETED)
+            item = rtds_task.result()
+            logger.info("switching_back_to_rtds")
+            using_fallback = False
+            yield item
+            rtds_task = asyncio.create_task(rtds_iter.__anext__())
+            continue
+
+        done, _pending = await asyncio.wait({rtds_task, fallback_task}, return_when=asyncio.FIRST_COMPLETED)
+
+        if rtds_task in done:
+            item = rtds_task.result()
+            logger.info("switching_back_to_rtds")
+            using_fallback = False
+            yield item
+            rtds_task = asyncio.create_task(rtds_iter.__anext__())
+
+            if fallback_task and not fallback_task.done():
+                fallback_task.cancel()
+            fallback_task = None
+            continue
+
+        try:
+            item = fallback_task.result()
+        except StopAsyncIteration:
+            fallback_task = None
+            await asyncio.sleep(0.01)
+            continue
+
+        yield item
+        fallback_task = asyncio.create_task(fallback_iter.__anext__())
+
+
+async def stream_clob_with_resubscribe(
+    clob: CLOBWebSocket,
+    get_token_ids: Callable[[], set[str]],
+    *,
+    idle_sleep_seconds: float = 1.0,
+) -> AsyncIterator[BookTop]:
+    """Yield book tops and re-subscribe when token ids roll to a new epoch."""
+    while True:
+        snapshot = tuple(sorted(get_token_ids()))
+        if not snapshot:
+            await asyncio.sleep(idle_sleep_seconds)
+            continue
+
+        async for top in clob.stream_books(list(snapshot)):
+            yield top
+            current = tuple(sorted(get_token_ids()))
+            if current != snapshot:
+                logger.info("clob_token_set_changed_resubscribing", previous=snapshot, current=current)
+                break
 
 
 async def orchestrate() -> None:
@@ -93,26 +179,17 @@ async def orchestrate() -> None:
             await trader.buy_fok(best.token_id, best.ask, str(best.market.horizon_minutes))
 
     async def consume_rtds() -> None:
-        last_rtds_update = time.time()
-        async for ts, px, metadata in rtds.stream_prices():
-            last_rtds_update = time.time()
+        async for ts, px, metadata in stream_prices_with_fallback(
+            rtds,
+            fallback,
+            use_fallback_feed=settings.use_fallback_feed,
+            price_staleness_threshold=settings.price_staleness_threshold,
+        ):
             await process_price(ts, px, metadata)
 
-            if settings.use_fallback_feed and (time.time() - last_rtds_update) > settings.price_staleness_threshold:
-                logger.warning("switching_to_chainlink_direct_fallback")
-                async for fts, fpx, fmeta in fallback.stream_prices():
-                    await process_price(fts, fpx, fmeta)
-                    if (time.time() - last_rtds_update) <= settings.price_staleness_threshold:
-                        logger.info("switching_back_to_rtds")
-                        break
-
     async def consume_clob() -> None:
-        while True:
-            if not token_ids:
-                await asyncio.sleep(1)
-                continue
-            async for top in clob.stream_books(list(token_ids)):
-                strategy.on_book(top.token_id, top.best_bid, top.best_ask)
+        async for top in stream_clob_with_resubscribe(clob, lambda: token_ids):
+            strategy.on_book(top.token_id, top.best_bid, top.best_ask)
 
     await asyncio.gather(consume_rtds(), consume_clob())
 
