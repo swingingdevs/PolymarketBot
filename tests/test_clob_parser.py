@@ -97,34 +97,9 @@ def test_malformed_frames_emit_warning_and_dropped_metrics(
     assert warnings[-1]["event_type"] == expected_event_type
 
 
-def test_price_change_after_migration_schema_parses_per_token_best_levels() -> None:
+def test_price_change_after_migration_schema_parses_per_token_best_levels_and_trade_fields() -> None:
     clob = CLOBWebSocket("wss://ws-subscriptions-clob.polymarket.com")
-    payload = json.dumps(
-        {
-            "event_type": "price_change",
-            "timestamp": "1758000000000",
-            "price_changes": [
-                {
-                    "asset_id": "token-new-1",
-                    "best_bid": "0.41",
-                    "best_ask": "0.43",
-                    "hash": "0xabc",
-                    "side": "BUY",
-                    "price": "0.42",
-                    "size": "100",
-                },
-                {
-                    "asset_id": "token-new-2",
-                    "best_bid": "0.57",
-                    "best_ask": "0.59",
-                    "hash": "0xdef",
-                    "side": "SELL",
-                    "price": "0.58",
-                    "size": "75",
-                },
-            ],
-        }
-    )
+    payload = (FIXTURE_DIR / "price_change_sept_2025_new_keys.json").read_text(encoding="utf-8")
 
     tops = clob._parse_raw_message(payload, [0.0])
 
@@ -132,12 +107,21 @@ def test_price_change_after_migration_schema_parses_per_token_best_levels() -> N
     assert tops[0].token_id == "token-new-1"
     assert tops[0].best_bid == 0.41
     assert tops[0].best_ask == 0.43
+    assert tops[0].last_trade_hash == "0xabc123"
+    assert tops[0].last_trade_side == "buy"
+    assert tops[0].last_trade_price == 0.42
+    assert tops[0].last_trade_size == 100.0
+
     assert tops[1].token_id == "token-new-2"
     assert tops[1].best_bid == 0.57
     assert tops[1].best_ask == 0.59
+    assert tops[1].last_trade_hash == "0xdef456"
+    assert tops[1].last_trade_side == "sell"
+    assert tops[1].last_trade_price == 0.58
+    assert tops[1].last_trade_size == 75.0
 
 
-def test_price_change_before_migration_schema_updates_last_update_without_best_levels() -> None:
+def test_price_change_before_migration_schema_updates_last_update_without_new_trade_fields() -> None:
     clob = CLOBWebSocket("wss://ws-subscriptions-clob.polymarket.com")
     last_update = [0.0]
 
@@ -174,4 +158,8 @@ def test_price_change_before_migration_schema_updates_last_update_without_best_l
     assert tops[0].token_id == "token-legacy"
     assert tops[0].best_bid == 0.46
     assert tops[0].best_ask == 0.47
+    assert tops[0].last_trade_hash is None
+    assert tops[0].last_trade_side is None
+    assert tops[0].last_trade_price is None
+    assert tops[0].last_trade_size is None
     assert last_update[0] >= seeded_update_time
