@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     max_entry_price: float = 0.97
     fee_bps: float = 10.0
 
+    calibration_method: str = "none"
+    calibration_input: str = "p_hat"
+    calibration_params_path: str = ""
+    calibration_logistic_coef: float = 1.0
+    calibration_logistic_intercept: float = 0.0
+
     dry_run: bool = True
     max_usd_per_trade: float = 50.0
     max_daily_loss: float = 250.0

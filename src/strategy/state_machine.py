@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import math
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import structlog
 
 from metrics import CURRENT_EV, WATCH_EVENTS
 from markets.gamma_cache import UpDownMarket
+from strategy.calibration import CalibrationInput, IdentityCalibrator, ProbabilityCalibrator
 from utils.price_validation import is_price_stale, validate_price_source
 
 logger = structlog.get_logger(__name__)
@@ -21,6 +22,10 @@ class Candidate:
     ask: float
     ev: float
     p_hat: float
+    fill_prob: float
+    fee_cost: float
+    slippage_cost: float
+    ev_exec: float
     d: float
 
 
@@ -28,6 +33,14 @@ class Candidate:
 class BookSnapshot:
     bid: float | None = None
     ask: float | None = None
+    bid_size: float | None = None
+    ask_size: float | None = None
+    fill_prob: float | None = None
+
+
+@dataclass(slots=True)
+class FillProbStats:
+    samples: deque[tuple[float | None, float]] = field(default_factory=lambda: deque(maxlen=50))
 
 
 class StrategyStateMachine:
@@ -38,18 +51,16 @@ class StrategyStateMachine:
         d_min: float,
         max_entry_price: float,
         fee_bps: float,
-        rolling_window_seconds: int = 60,
-        watch_zscore_threshold: float = 0.0,
-        watch_mode_expiry_seconds: int = 60,
+        probability_calibrator: ProbabilityCalibrator | None = None,
+        calibration_input: CalibrationInput = "p_hat",
     ) -> None:
         self.threshold = threshold
         self.hammer_secs = hammer_secs
         self.d_min = d_min
         self.max_entry_price = max_entry_price
         self.fee_bps = fee_bps
-        self.rolling_window_seconds = max(2, rolling_window_seconds)
-        self.watch_zscore_threshold = max(0.0, watch_zscore_threshold)
-        self.watch_mode_expiry_seconds = max(1, watch_mode_expiry_seconds)
+        self.probability_calibrator = probability_calibrator or IdentityCalibrator()
+        self.calibration_input = calibration_input
 
         self.last_price: float | None = None
         self.curr_minute_start: int | None = None
@@ -61,33 +72,62 @@ class StrategyStateMachine:
         self.start_price_metadata: dict[int, dict[str, object]] = {}
         self.prices_1s: deque[tuple[int, float]] = deque(maxlen=max(120, self.rolling_window_seconds * 2))
         self.books: dict[str, BookSnapshot] = {}
+        self.fill_stats: dict[str, FillProbStats] = {}
 
-    def _set_watch_mode(self, enabled: bool, now_sec: int) -> None:
-        if enabled:
-            if not self.watch_mode:
-                WATCH_EVENTS.inc()
-            self.watch_mode = True
-            self.watch_mode_started_at = now_sec
-            return
+    def _estimate_fill_prob(self, token_id: str, ask: float | None, ts: float | None) -> float | None:
+        if ask is None:
+            return None
+        stats = self.fill_stats.setdefault(token_id, FillProbStats())
+        stats.samples.append((ask, ts if ts is not None else float(len(stats.samples))))
+        if len(stats.samples) < 2:
+            return 0.5
 
-        self.watch_mode = False
-        self.watch_mode_started_at = None
+        same_time = 0.0
+        total_time = 0.0
+        rows = list(stats.samples)
+        for idx in range(1, len(rows)):
+            prev_ask, prev_ts = rows[idx - 1]
+            curr_ask, curr_ts = rows[idx]
+            if prev_ts is None or curr_ts is None:
+                dt = 1.0
+            else:
+                dt = max(0.0, curr_ts - prev_ts)
+            total_time += dt
+            if prev_ask == curr_ask:
+                same_time += dt
 
-    def _rolling_returns(self) -> list[float]:
-        rows = list(self.prices_1s)
-        rets: list[float] = []
-        for i in range(1, len(rows)):
-            prev, curr = rows[i - 1][1], rows[i][1]
-            if prev > 0:
-                rets.append((curr / prev) - 1)
-        return rets
+        if total_time <= 0:
+            stability = sum(1 for i in range(1, len(rows)) if rows[i][0] == rows[i - 1][0]) / (len(rows) - 1)
+        else:
+            stability = same_time / total_time
+        return min(0.95, max(0.05, stability))
 
-    def on_book(self, token_id: str, bid: float | None, ask: float | None) -> None:
+    def on_book(
+        self,
+        token_id: str,
+        bid: float | None,
+        ask: float | None,
+        bid_size: float | None = None,
+        ask_size: float | None = None,
+        fill_prob: float | None = None,
+        ts: float | None = None,
+    ) -> None:
         snap = self.books.get(token_id, BookSnapshot())
         if bid is not None:
             snap.bid = bid
         if ask is not None:
             snap.ask = ask
+        if bid_size is not None:
+            snap.bid_size = bid_size
+        if ask_size is not None:
+            snap.ask_size = ask_size
+
+        inferred_fill_prob = self._estimate_fill_prob(token_id, snap.ask, ts)
+        if fill_prob is not None:
+            snap.fill_prob = min(1.0, max(0.0, fill_prob))
+        elif inferred_fill_prob is not None:
+            snap.fill_prob = inferred_fill_prob
+
         self.books[token_id] = snap
 
     def on_price(self, ts: float, price: float, metadata: dict[str, object] | None = None) -> None:
@@ -172,7 +212,15 @@ class StrategyStateMachine:
     def _normal_cdf(x: float) -> float:
         return 0.5 * (1 + math.erf(x / math.sqrt(2)))
 
-    def _candidate_ev(self, market: UpDownMarket, direction: str, ask: float) -> Candidate | None:
+    def _candidate_ev(
+        self,
+        market: UpDownMarket,
+        direction: str,
+        ask: float,
+        bid: float | None,
+        ask_size: float | None,
+        fill_prob: float | None,
+    ) -> Candidate | None:
         curr = self.last_price
         if curr is None or ask <= 0:
             return None
@@ -194,11 +242,38 @@ class StrategyStateMachine:
 
         z_up = (start - curr) / (curr * sigma_t)
         p_up = 1 - self._normal_cdf(z_up)
-        p_hat = p_up if direction == "UP" else 1 - p_up
+        raw_p_hat = p_up if direction == "UP" else 1 - p_up
+        z_directional = -z_up if direction == "UP" else z_up
+
+        if self.calibration_input == "z_score":
+            p_hat = self.probability_calibrator.calibrate(z_directional)
+        else:
+            p_hat = self.probability_calibrator.calibrate(raw_p_hat)
 
         fee_cost = self.fee_bps / 10000.0
-        ev = p_hat - ask - fee_cost
-        return Candidate(market=market, direction=direction, token_id="", ask=ask, ev=ev, p_hat=p_hat, d=d)
+        spread = max(0.0, ask - bid) if bid is not None else 0.0
+        spread_penalty = 0.5 * spread
+        depth_penalty = 0.0
+        if ask_size is not None and ask_size > 0:
+            depth_penalty = max(0.0, 1.0 - ask_size) * spread
+        slippage_cost = spread_penalty + depth_penalty
+
+        effective_fill_prob = 0.5 if fill_prob is None else min(1.0, max(0.0, fill_prob))
+        ev_exec = p_hat - ask - fee_cost - slippage_cost
+        ev = ev_exec * effective_fill_prob
+        return Candidate(
+            market=market,
+            direction=direction,
+            token_id="",
+            ask=ask,
+            ev=ev,
+            p_hat=p_hat,
+            fill_prob=effective_fill_prob,
+            fee_cost=fee_cost,
+            slippage_cost=slippage_cost,
+            ev_exec=ev_exec,
+            d=d,
+        )
 
     def pick_best(
         self,
@@ -211,10 +286,18 @@ class StrategyStateMachine:
             if not self.in_hammer_window(now_ts, market.end_epoch):
                 continue
             for direction, tid in (("UP", market.up_token_id), ("DOWN", market.down_token_id)):
-                ask = self.books.get(tid, BookSnapshot()).ask
+                book = self.books.get(tid, BookSnapshot())
+                ask = book.ask
                 if ask is None:
                     continue
-                cand = self._candidate_ev(market, direction, ask)
+                cand = self._candidate_ev(
+                    market,
+                    direction,
+                    ask,
+                    bid=book.bid,
+                    ask_size=book.ask_size,
+                    fill_prob=book.fill_prob,
+                )
                 if cand:
                     cand.token_id = tid
                     candidates.append(cand)
@@ -223,5 +306,16 @@ class StrategyStateMachine:
             return None
 
         best = max(candidates, key=lambda c: c.ev)
+        logger.info(
+            "best_candidate_selected",
+            token_id=best.token_id,
+            direction=best.direction,
+            ask=best.ask,
+            p_hat=best.p_hat,
+            fill_prob=best.fill_prob,
+            slippage_cost=best.slippage_cost,
+            ev_exec=best.ev_exec,
+            ev=best.ev,
+        )
         CURRENT_EV.set(best.ev)
         return best
