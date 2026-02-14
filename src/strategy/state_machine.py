@@ -316,6 +316,9 @@ class StrategyStateMachine:
         if enabled:
             WATCH_TRIGGERED.inc()
 
+    def disable_watch_mode(self, ts: int) -> None:
+        self._set_watch_mode(False, ts)
+
     def in_hammer_window(self, now_ts: int, end_epoch: int) -> bool:
         return 0 <= (end_epoch - now_ts) <= self.hammer_secs
 

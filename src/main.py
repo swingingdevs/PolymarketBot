@@ -20,27 +20,55 @@ from markets.token_metadata_cache import TokenMetadata, TokenMetadataCache
 from ops.recorder import EventRecorder
 from metrics import (
     FEED_LAG_SECONDS,
+    FEED_MODE,
     HAMMER_ATTEMPTED,
     HAMMER_FILLED,
     KILL_SWITCH_ACTIVE,
     ORACLE_SPOT_DIVERGENCE_PCT,
+    RECOVERY_STABILIZATION_ACTIVE,
     STALE_FEED,
     TRADING_ALLOWED,
     start_metrics_server,
 )
 from strategy.calibration import load_probability_calibrator
 from strategy.quorum_health import QuorumDecision, QuorumHealth
+from strategy.execution_mode import ExecutionMode, get_execution_mode, set_execution_mode
 from strategy.state_machine import StrategyStateMachine
 
 logger = structlog.get_logger(__name__)
 
 
 def update_quorum_metrics(decision: QuorumDecision) -> None:
+    divergence_data_available = decision.divergence_data_available
     TRADING_ALLOWED.set(1 if decision.trading_allowed else 0)
-    KILL_SWITCH_ACTIVE.set(1 if "SPOT_DIVERGENCE_SUSTAINED" in decision.reason_codes else 0)
-    ORACLE_SPOT_DIVERGENCE_PCT.set(decision.divergence_pct or 0.0)
+    KILL_SWITCH_ACTIVE.set(0 if (decision.trading_allowed and divergence_data_available) else 1)
+    if divergence_data_available:
+        ORACLE_SPOT_DIVERGENCE_PCT.set(decision.spot_quorum_divergence_pct)
     for feed in ("chainlink", "binance", "coinbase"):
         FEED_LAG_SECONDS.labels(feed=feed).set(decision.feed_lag_seconds.get(feed, 0.0))
+
+
+def recovery_window_satisfied(
+    *,
+    now: float,
+    recovery_started_at: float | None,
+    fresh_rtds_updates: int,
+    stabilization_window_seconds: float,
+    min_fresh_updates: int,
+) -> bool:
+    if recovery_started_at is None:
+        return False
+    elapsed = now - recovery_started_at
+    return elapsed >= stabilization_window_seconds and fresh_rtds_updates >= min_fresh_updates
+
+
+def enter_monitor_only_mode(strategy: StrategyStateMachine, feed_state: dict[str, object], now: float) -> None:
+    feed_state["mode"] = "fallback"
+    set_execution_mode(ExecutionMode.MONITOR_ONLY)
+    FEED_MODE.labels(mode="rtds").set(0)
+    FEED_MODE.labels(mode="fallback").set(1)
+    RECOVERY_STABILIZATION_ACTIVE.set(0)
+    strategy.disable_watch_mode(int(now))
 
 
 def floor_to_boundary(ts: int, seconds: int) -> int:
@@ -323,7 +351,7 @@ async def orchestrate() -> None:
         update_quorum_metrics(decision)
 
         if previous_watch_mode is False and strategy.watch_mode is True and not decision.trading_allowed:
-            strategy._set_watch_mode(False, int(ts))
+            strategy.disable_watch_mode(int(ts))
             logger.warning("watch_mode_blocked_by_quorum", reason_codes=decision.reason_codes)
 
         if strategy.watch_mode and not decision.trading_allowed:
@@ -361,12 +389,11 @@ async def orchestrate() -> None:
                 )
                 return
 
-            if feed_state["mode"] == "fallback" and not settings.allow_orders_while_fallback_active:
+            if get_execution_mode() == ExecutionMode.MONITOR_ONLY:
                 logger.warning(
-                    "order_blocked_while_spot_liveness_fallback_active",
+                    "order_blocked_monitor_only_mode",
                     token_id=best.token_id,
-                    reduced_trading_confidence=True,
-                    override_flag="ALLOW_ORDERS_WHILE_FALLBACK_ACTIVE",
+                    feed_mode=feed_state["mode"],
                 )
                 return
 
@@ -412,15 +439,21 @@ async def orchestrate() -> None:
 
     feed_state = {
         "mode": "rtds",
-        "last_rtds_update": time.time(),
+        "last_rtds_payload_ts": time.time(),
+        "recovery_started_at": None,
+        "fresh_rtds_updates": 0,
     }
+    set_execution_mode(ExecutionMode.LIVE_TRADING)
+    FEED_MODE.labels(mode="rtds").set(1)
+    FEED_MODE.labels(mode="fallback").set(0)
+    RECOVERY_STABILIZATION_ACTIVE.set(0)
     TRADING_ALLOWED.set(0)
     KILL_SWITCH_ACTIVE.set(1)
     fallback_task: asyncio.Task[None] | None = None
 
     async def consume_rtds() -> None:
         async for ts, px, metadata in rtds.stream_prices():
-            feed_state["last_rtds_update"] = time.time()
+            feed_state["last_rtds_payload_ts"] = float(metadata.get("timestamp") or ts)
             if feed_state["mode"] != "rtds":
                 continue
             await process_price(ts, px, metadata)
@@ -441,19 +474,30 @@ async def orchestrate() -> None:
     async def monitor_rtds_staleness() -> None:
         nonlocal fallback_task
         check_interval = max(0.1, min(1.0, settings.price_staleness_threshold / 2))
+        stabilization_window_seconds = float(settings.rtds_recovery_stabilization_seconds)
+        min_fresh_updates = int(settings.rtds_recovery_min_fresh_updates)
+
         while True:
             await asyncio.sleep(check_interval)
-            age = time.time() - float(feed_state["last_rtds_update"])
+            now = time.time()
+            age = now - float(feed_state["last_rtds_payload_ts"])
             stale = age > settings.price_staleness_threshold
 
             if stale and settings.use_fallback_feed:
+                feed_state["recovery_started_at"] = None
+                feed_state["fresh_rtds_updates"] = 0
+                RECOVERY_STABILIZATION_ACTIVE.set(0)
                 if feed_state["mode"] != "fallback":
-                    feed_state["mode"] = "fallback"
+                    enter_monitor_only_mode(strategy, feed_state, now)
                     logger.warning(
-                        "enter_spot_liveness_fallback_mode",
+                        "fallback_mode_entered",
+                        mode="fallback",
+                        execution_mode=get_execution_mode().value,
+                        now_ts=now,
+                        last_rtds_payload_ts=feed_state["last_rtds_payload_ts"],
                         staleness_seconds=age,
-                        reduced_trading_confidence=True,
-                        advisory="fallback is spot-based liveness only; not canonical for market resolution",
+                        threshold_seconds=settings.price_staleness_threshold,
+                        advisory="fallback is monitor-only and not execution-authoritative",
                     )
                     STALE_FEED.inc()
                     fallback_task = asyncio.create_task(consume_fallback())
@@ -467,8 +511,38 @@ async def orchestrate() -> None:
                 continue
 
             if feed_state["mode"] == "fallback":
+                if feed_state["recovery_started_at"] is None:
+                    feed_state["recovery_started_at"] = now
+                    feed_state["fresh_rtds_updates"] = 1
+                else:
+                    feed_state["fresh_rtds_updates"] += 1
+
+                elapsed = now - float(feed_state["recovery_started_at"])
+                RECOVERY_STABILIZATION_ACTIVE.set(1)
+                if not recovery_window_satisfied(
+                    now=now,
+                    recovery_started_at=float(feed_state["recovery_started_at"]),
+                    fresh_rtds_updates=int(feed_state["fresh_rtds_updates"]),
+                    stabilization_window_seconds=stabilization_window_seconds,
+                    min_fresh_updates=min_fresh_updates,
+                ):
+                    logger.info(
+                        "rtds_recovery_stabilizing",
+                        elapsed_seconds=elapsed,
+                        stabilization_window_seconds=stabilization_window_seconds,
+                        fresh_updates=feed_state["fresh_rtds_updates"],
+                        min_fresh_updates=min_fresh_updates,
+                    )
+                    continue
+
                 feed_state["mode"] = "rtds"
-                logger.info("recovered_rtds_freshness", staleness_seconds=age)
+                feed_state["recovery_started_at"] = None
+                feed_state["fresh_rtds_updates"] = 0
+                RECOVERY_STABILIZATION_ACTIVE.set(0)
+                set_execution_mode(ExecutionMode.LIVE_TRADING)
+                FEED_MODE.labels(mode="rtds").set(1)
+                FEED_MODE.labels(mode="fallback").set(0)
+                logger.info("recovered_rtds_freshness", staleness_seconds=age, stabilization_window_seconds=stabilization_window_seconds)
                 if fallback_task and not fallback_task.done():
                     fallback_task.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
