@@ -96,20 +96,82 @@ def test_malformed_frames_emit_warning_and_dropped_metrics(
     assert warnings[-1]["reason"] == expected_reason
     assert warnings[-1]["event_type"] == expected_event_type
 
-def test_parse_levels_respects_depth_limit() -> None:
-    clob = CLOBWebSocket("wss://ws-subscriptions-clob.polymarket.com", book_depth_levels=2)
+
+def test_price_change_after_migration_schema_parses_per_token_best_levels() -> None:
+    clob = CLOBWebSocket("wss://ws-subscriptions-clob.polymarket.com")
     payload = json.dumps(
         {
-            "event_type": "book",
-            "asset_id": "token-a",
-            "timestamp": 1712345678,
-            "bids": [[0.44, 10], [0.43, 12], [0.42, 14]],
-            "asks": [[0.45, 11], [0.46, 13], [0.47, 15]],
+            "event_type": "price_change",
+            "timestamp": "1758000000000",
+            "price_changes": [
+                {
+                    "asset_id": "token-new-1",
+                    "best_bid": "0.41",
+                    "best_ask": "0.43",
+                    "hash": "0xabc",
+                    "side": "BUY",
+                    "price": "0.42",
+                    "size": "100",
+                },
+                {
+                    "asset_id": "token-new-2",
+                    "best_bid": "0.57",
+                    "best_ask": "0.59",
+                    "hash": "0xdef",
+                    "side": "SELL",
+                    "price": "0.58",
+                    "size": "75",
+                },
+            ],
         }
     )
 
     tops = clob._parse_raw_message(payload, [0.0])
 
+    assert len(tops) == 2
+    assert tops[0].token_id == "token-new-1"
+    assert tops[0].best_bid == 0.41
+    assert tops[0].best_ask == 0.43
+    assert tops[1].token_id == "token-new-2"
+    assert tops[1].best_bid == 0.57
+    assert tops[1].best_ask == 0.59
+
+
+def test_price_change_before_migration_schema_updates_last_update_without_best_levels() -> None:
+    clob = CLOBWebSocket("wss://ws-subscriptions-clob.polymarket.com")
+    last_update = [0.0]
+
+    snapshot = json.dumps(
+        {
+            "event_type": "book",
+            "asset_id": "token-legacy",
+            "bids": [["0.45", "200"]],
+            "asks": [["0.47", "220"]],
+            "timestamp": "1758000000000",
+        }
+    )
+    clob._parse_raw_message(snapshot, last_update)
+    seeded_update_time = last_update[0]
+
+    legacy_price_change = json.dumps(
+        {
+            "event_type": "price_change",
+            "asset_id": "token-legacy",
+            "changes": [
+                {
+                    "side": "BUY",
+                    "price": "0.46",
+                    "size": "150",
+                }
+            ],
+            "timestamp": "1758000001000",
+        }
+    )
+
+    tops = clob._parse_raw_message(legacy_price_change, last_update)
+
     assert len(tops) == 1
-    assert tops[0].bids_levels == [(0.44, 10.0), (0.43, 12.0)]
-    assert tops[0].asks_levels == [(0.45, 11.0), (0.46, 13.0)]
+    assert tops[0].token_id == "token-legacy"
+    assert tops[0].best_bid == 0.46
+    assert tops[0].best_ask == 0.47
+    assert last_update[0] >= seeded_update_time

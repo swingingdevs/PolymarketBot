@@ -11,60 +11,28 @@ from config import Settings
 from execution.trader import Trader
 from feeds.chainlink_direct import ChainlinkDirectFeed
 from feeds.clob_ws import BookTop, CLOBWebSocket
+from feeds.coinbase_ws import CoinbaseSpotFeed
 from feeds.rtds import RTDSFeed
 from logging_utils import configure_logging
 from markets.fee_rate_cache import FeeRateCache
 from markets.gamma_cache import GammaCache, UpDownMarket
-from markets.token_metadata_cache import TokenMetadata, TokenMetadataCache
+from markets.token_metadata_cache import TokenMetadataCache
+from ops.recorder import EventRecorder
 from metrics import HAMMER_ATTEMPTED, HAMMER_FILLED, KILL_SWITCH_ACTIVE, STALE_FEED, start_metrics_server
 from strategy.calibration import load_probability_calibrator
+from strategy.quorum_health import QuorumDecision, QuorumHealth
 from strategy.state_machine import StrategyStateMachine
 
 logger = structlog.get_logger(__name__)
 
 
-def update_divergence_kill_switch(
-    *,
-    ts: float,
-    metadata: dict[str, object],
-    kill_switch_state: dict[str, object],
-    settings: Settings,
-) -> None:
-    divergence_raw = metadata.get("divergence_pct")
-    divergence_pct = float(divergence_raw) if divergence_raw is not None else None
-    kill_switch_active = bool(kill_switch_state["active"])
-
-    if divergence_pct is None:
-        kill_switch_state["breach_started_at"] = None
-        return
-
-    kill_switch_state["last_divergence_pct"] = divergence_pct
-    threshold = settings.divergence_threshold_pct
-
-    if divergence_pct >= threshold:
-        breach_started_at = kill_switch_state["breach_started_at"]
-        if breach_started_at is None:
-            kill_switch_state["breach_started_at"] = ts
-        elif not kill_switch_active and (ts - float(breach_started_at)) >= settings.divergence_sustain_seconds:
-            kill_switch_state["active"] = True
-            KILL_SWITCH_ACTIVE.set(1)
-            logger.error(
-                "divergence_kill_switch_activated",
-                divergence_pct=divergence_pct,
-                threshold_pct=threshold,
-                sustain_seconds=settings.divergence_sustain_seconds,
-            )
-        return
-
-    kill_switch_state["breach_started_at"] = None
-    if kill_switch_active:
-        kill_switch_state["active"] = False
-        KILL_SWITCH_ACTIVE.set(0)
-        logger.info(
-            "divergence_kill_switch_cleared",
-            divergence_pct=divergence_pct,
-            threshold_pct=threshold,
-        )
+def update_quorum_metrics(decision: QuorumDecision) -> None:
+    TRADING_ALLOWED.set(1 if decision.trading_allowed else 0)
+    KILL_SWITCH_ACTIVE.set(0 if decision.trading_allowed else 1)
+    if decision.spot_quorum_divergence_pct is not None:
+        ORACLE_SPOT_DIVERGENCE_PCT.set(decision.spot_quorum_divergence_pct)
+    for feed in ("chainlink", "binance", "coinbase"):
+        FEED_LAG_SECONDS.labels(feed=feed).set(decision.feed_lag_seconds.get(feed, 0.0))
 
 
 def floor_to_boundary(ts: int, seconds: int) -> int:
@@ -169,7 +137,7 @@ async def orchestrate() -> None:
     gamma = GammaCache(str(settings.gamma_api_url))
     rtds = RTDSFeed(
         settings.rtds_ws_url,
-        settings.symbol,
+        symbol=settings.symbol,
         topic=settings.rtds_topic,
         spot_topic=settings.rtds_spot_topic,
         spot_max_age_seconds=settings.rtds_spot_max_age_seconds,
@@ -181,6 +149,26 @@ async def orchestrate() -> None:
         log_price_comparison=settings.log_price_comparison,
     )
     fallback = ChainlinkDirectFeed(settings.chainlink_direct_api_url)
+    coinbase = CoinbaseSpotFeed(
+        product_id=settings.coinbase_product_id,
+        public_ws_url=settings.coinbase_ws_feed_url,
+        direct_ws_url=settings.coinbase_ws_direct_url or None,
+        api_key=settings.coinbase_ws_api_key,
+        api_secret=settings.coinbase_ws_api_secret,
+        api_passphrase=settings.coinbase_ws_api_passphrase,
+        ping_interval=settings.rtds_ping_interval,
+        pong_timeout=settings.rtds_pong_timeout,
+        reconnect_delay_min=settings.rtds_reconnect_delay_min,
+        reconnect_delay_max=settings.rtds_reconnect_delay_max,
+    )
+    quorum = QuorumHealth(
+        chainlink_max_lag_seconds=settings.chainlink_max_lag_seconds,
+        spot_max_lag_seconds=settings.spot_max_lag_seconds,
+        divergence_threshold_pct=settings.divergence_threshold_pct,
+        divergence_sustain_seconds=settings.divergence_sustain_seconds,
+        min_spot_sources=settings.spot_quorum_min_sources,
+    )
+
     token_metadata_cache = TokenMetadataCache(ttl_seconds=settings.token_metadata_ttl_seconds)
     fee_rate_cache = FeeRateCache(settings.clob_host, ttl_seconds=settings.fee_rate_ttl_seconds)
     trader = Trader(settings, token_metadata_cache=token_metadata_cache)
@@ -206,6 +194,14 @@ async def orchestrate() -> None:
         price_stale_after_seconds=settings.price_stale_after_seconds,
         watch_mode_expiry_seconds=settings.watch_mode_expiry_seconds,
     )
+
+    recorder = EventRecorder(
+        settings.recorder_output_path,
+        queue_maxsize=settings.recorder_queue_maxsize,
+        enabled=settings.recorder_enabled,
+    )
+    await recorder.start()
+
 
     market_state: dict[str, UpDownMarket] = {}
     token_ids: set[str] = set()
@@ -287,29 +283,68 @@ async def orchestrate() -> None:
 
     async def process_price(ts: float, px: float, metadata: dict[str, object]) -> None:
         nonlocal last_refresh_ts
+        recorder.record(
+            "rtds_price",
+            ts=ts,
+            price=px,
+            payload_ts=metadata.get("timestamp"),
+            received_ts=metadata.get("received_ts", time.time()),
+            divergence_pct=metadata.get("divergence_pct"),
+            spot_price=metadata.get("spot_price"),
+        )
         strategy.on_price(ts, px, metadata)
+
+        now_received = float(metadata.get("received_ts") or time.time())
+        quorum.update_chainlink(
+            price=px,
+            payload_ts=float(metadata.get("timestamp", ts)),
+            received_ts=now_received,
+        )
+
+        spot_price = metadata.get("spot_price")
+        if spot_price is not None:
+            quorum.update_spot(
+                feed="binance",
+                price=float(spot_price),
+                payload_ts=float(metadata.get("timestamp", ts)),
+                received_ts=now_received,
+            )
+
+        decision = quorum.evaluate(now=now_received)
+        update_quorum_metrics(decision)
+
+        if previous_watch_mode is False and strategy.watch_mode is True and not decision.trading_allowed:
+            strategy._set_watch_mode(False, int(ts))
+            logger.warning("watch_mode_blocked_by_quorum", reason_codes=decision.reason_codes)
+
         now = int(ts)
         if (now // 60) != (last_refresh_ts // 60):
             await refresh_markets(now)
             last_refresh_ts = now
-
-        update_divergence_kill_switch(
-            ts=ts,
-            metadata=metadata,
-            kill_switch_state=kill_switch_state,
-            settings=settings,
-        )
 
         if not strategy.watch_mode:
             return
 
         best = strategy.pick_best(now, list(market_state.values()), {})
         if best and best.ev > 0:
+            recorder.record(
+                "decision",
+                ts=ts,
+                p_hat=best.p_hat,
+                ask=best.ask,
+                fee_cost=best.fee_cost,
+                slippage_cost=best.slippage_cost,
+                ev=best.ev,
+                horizon=best.market.horizon_minutes,
+                token_id=best.token_id,
+                notional=settings.quote_size_usd,
+            )
             if bool(kill_switch_state["active"]):
                 logger.warning(
-                    "order_blocked_by_divergence_kill_switch",
+                    "order_blocked_by_quorum_health",
                     token_id=best.token_id,
-                    divergence_pct=kill_switch_state["last_divergence_pct"],
+                    reason_codes=decision.reason_codes,
+                    divergence_pct=decision.spot_quorum_divergence_pct,
                 )
                 return
 
@@ -321,6 +356,17 @@ async def orchestrate() -> None:
                 direction=best.direction,
                 horizon=best.market.horizon_minutes,
             )
+            attempt_size = settings.quote_size_usd / max(best.ask, 1e-9)
+            recorder.record(
+                "order_attempt",
+                ts=time.time(),
+                token_id=best.token_id,
+                px=best.ask,
+                size=attempt_size,
+                tif="FOK",
+                notional=settings.quote_size_usd,
+                mode="dry" if settings.dry_run else "live",
+            )
             HAMMER_ATTEMPTED.inc()
             filled = await trader.buy_fok(
                 best.token_id,
@@ -329,6 +375,13 @@ async def orchestrate() -> None:
                 market_slug=best.market.slug,
                 market_start_epoch=best.market.start_epoch,
             )
+            recorder.record(
+                "order_result",
+                ts=time.time(),
+                ok=filled,
+                response_summary="filled" if filled else "rejected_or_failed",
+                failure_type=None if filled else "rejected_or_failed",
+            )
             if filled:
                 HAMMER_FILLED.inc()
 
@@ -336,12 +389,8 @@ async def orchestrate() -> None:
         "mode": "rtds",
         "last_rtds_update": time.time(),
     }
-    kill_switch_state: dict[str, object] = {
-        "breach_started_at": None,
-        "active": False,
-        "last_divergence_pct": None,
-    }
-    KILL_SWITCH_ACTIVE.set(0)
+    TRADING_ALLOWED.set(0)
+    KILL_SWITCH_ACTIVE.set(1)
     fallback_task: asyncio.Task[None] | None = None
 
     async def consume_rtds() -> None:
@@ -356,6 +405,13 @@ async def orchestrate() -> None:
             if feed_state["mode"] != "fallback":
                 return
             await process_price(ts, px, metadata)
+
+    async def consume_coinbase() -> None:
+        async for ts, px, metadata in coinbase.stream_prices():
+            received_ts = float(metadata.get("received_ts") or time.time())
+            quorum.update_spot(feed="coinbase", price=px, payload_ts=ts, received_ts=received_ts)
+            decision = quorum.evaluate(now=received_ts)
+            update_quorum_metrics(decision)
 
     async def monitor_rtds_staleness() -> None:
         nonlocal fallback_task
@@ -415,6 +471,23 @@ async def orchestrate() -> None:
                     with contextlib.suppress(asyncio.CancelledError):
                         await resubscribe_task
                     top = next_book_task.result()
+                    bids_levels = [{"price": top.best_bid, "size": top.best_bid_size}] if top.best_bid is not None else []
+                    asks_levels = [{"price": top.best_ask, "size": top.best_ask_size}] if top.best_ask is not None else []
+                    recorder.record(
+                        "clob_book",
+                        ts=top.ts,
+                        token_id=top.token_id,
+                        bids_levels=bids_levels,
+                        asks_levels=asks_levels,
+                    )
+                    recorder.record(
+                        "clob_price_change",
+                        ts=top.ts,
+                        token_id=top.token_id,
+                        best_bid=top.best_bid,
+                        best_ask=top.best_ask,
+                        schema_version=1,
+                    )
                     strategy.on_book(
                         top.token_id,
                         top.best_bid,
@@ -467,6 +540,7 @@ async def orchestrate() -> None:
     try:
         async with asyncio.TaskGroup() as tg:
             tg.create_task(run_resilient("consume_rtds", consume_rtds))
+            tg.create_task(run_resilient("consume_coinbase", consume_coinbase))
             tg.create_task(run_resilient("consume_clob", consume_clob))
             tg.create_task(run_resilient("monitor_rtds_staleness", monitor_rtds_staleness))
     finally:
@@ -474,7 +548,7 @@ async def orchestrate() -> None:
             fallback_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await fallback_task
-        await fee_rate_cache.close()
+        await recorder.stop()
         await gamma.close()
 
 
