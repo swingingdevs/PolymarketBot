@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import asyncio
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,9 +18,11 @@ logger = structlog.get_logger(__name__)
 
 try:
     from py_clob_client.client import ClobClient
+    from py_clob_client.clob_types import ApiCreds
     from py_clob_client.clob_types import OrderArgs
 except Exception:  # pragma: no cover
     ClobClient = None
+    ApiCreds = None
     OrderArgs = None
 
 
@@ -46,6 +49,7 @@ class Trader:
         self.risk = self._load_risk_state()
         self._reset_daily_pnl_if_needed()
         self._update_risk_metrics(risk_blocked=False)
+        self._live_auth_ready = False
 
         if not settings.dry_run and ClobClient is not None:
             self.client = ClobClient(
@@ -53,6 +57,51 @@ class Trader:
                 chain_id=settings.chain_id,
                 key=settings.private_key,
             )
+            self._live_auth_ready = self._initialize_live_auth()
+
+    def _initialize_live_auth(self) -> bool:
+        if self.client is None:
+            logger.error("missing_clob_client")
+            return False
+
+        if not (self.settings.api_key and self.settings.api_secret and self.settings.api_passphrase):
+            logger.error(
+                "missing_clob_l2_credentials",
+                has_api_key=bool(self.settings.api_key),
+                has_api_secret=bool(self.settings.api_secret),
+                has_api_passphrase=bool(self.settings.api_passphrase),
+            )
+            return False
+
+        try:
+            if hasattr(self.client, "set_api_creds"):
+                creds_payload: Any
+                if ApiCreds is not None:
+                    creds_payload = ApiCreds(
+                        api_key=self.settings.api_key,
+                        api_secret=self.settings.api_secret,
+                        api_passphrase=self.settings.api_passphrase,
+                    )
+                else:
+                    creds_payload = {
+                        "api_key": self.settings.api_key,
+                        "api_secret": self.settings.api_secret,
+                        "api_passphrase": self.settings.api_passphrase,
+                    }
+                self.client.set_api_creds(creds_payload)
+            elif hasattr(self.client, "create_or_derive_api_creds"):
+                self.client.create_or_derive_api_creds()
+            elif hasattr(self.client, "derive_api_key"):
+                self.client.derive_api_key()
+
+            if hasattr(self.client, "assert_level_2_auth"):
+                self.client.assert_level_2_auth()
+        except Exception as exc:
+            logger.error("clob_l2_auth_initialization_failed", error=str(exc))
+            return False
+
+        logger.info("clob_l2_auth_initialized")
+        return True
 
     def _load_risk_state(self) -> RiskState:
         if not self._risk_state_path.exists():
@@ -367,6 +416,11 @@ class Trader:
 
         if self.client is None or OrderArgs is None:
             logger.error("missing_clob_client")
+            TRADES.labels(status="error", side="buy", horizon=horizon).inc()
+            return False
+
+        if not self._live_auth_ready:
+            logger.error("missing_clob_l2_credentials")
             TRADES.labels(status="error", side="buy", horizon=horizon).inc()
             return False
 
