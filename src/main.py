@@ -396,7 +396,6 @@ async def orchestrate() -> None:
                 await wait_for_token_set_to_stabilize()
                 subscribe_reason = token_change_reason
                 updated_tokens = sorted(token_ids)
-                await clob.update_subscriptions(updated_tokens)
                 logger.info(
                     "clob_resubscribe_triggered",
                     reason=subscribe_reason,
@@ -404,6 +403,7 @@ async def orchestrate() -> None:
                     token_count=len(updated_tokens),
                     token_ids=updated_tokens,
                 )
+                break
 
     async def run_resilient(name: str, worker: Callable[[], Awaitable[None]]) -> None:
         backoff = 1.0
