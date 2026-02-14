@@ -25,6 +25,7 @@ from metrics import (
     HAMMER_ATTEMPTED,
     HAMMER_FILLED,
     KILL_SWITCH_ACTIVE,
+    BOT_API_CREDS_AGE_SECONDS,
     ORACLE_SPOT_DIVERGENCE_PCT,
     RECOVERY_STABILIZATION_ACTIVE,
     STALE_FEED,
@@ -54,6 +55,12 @@ async def run_startup_geoblock_preflight(settings: Settings) -> bool:
 
     logger.info("geoblock_preflight_ok", country=country, region=region, trading_allowed=True)
     return True
+
+def update_api_credential_age_metric(created_at: float | None) -> None:
+    if created_at is None:
+        return
+    BOT_API_CREDS_AGE_SECONDS.set(max(0.0, time.time() - created_at))
+
 
 def update_quorum_metrics(decision: QuorumDecision) -> None:
     divergence_data_available = decision.divergence_data_available
