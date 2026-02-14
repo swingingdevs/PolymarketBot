@@ -106,6 +106,9 @@ class Settings(BaseSettings):
     metrics_host: str = "0.0.0.0"
     metrics_port: int = 9102
     token_metadata_ttl_seconds: float = 300.0
+    recorder_enabled: bool = False
+    recorder_output_path: str = "artifacts/session_recording.jsonl"
+    recorder_queue_maxsize: int = 10000
 
     @model_validator(mode="after")
     def apply_profile_defaults(self) -> "Settings":

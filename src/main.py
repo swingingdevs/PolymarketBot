@@ -15,6 +15,7 @@ from feeds.rtds import RTDSFeed
 from logging_utils import configure_logging
 from markets.gamma_cache import GammaCache, UpDownMarket
 from markets.token_metadata_cache import TokenMetadataCache
+from ops.recorder import EventRecorder
 from metrics import HAMMER_ATTEMPTED, HAMMER_FILLED, KILL_SWITCH_ACTIVE, STALE_FEED, start_metrics_server
 from strategy.calibration import load_probability_calibrator
 from strategy.state_machine import StrategyStateMachine
@@ -204,6 +205,14 @@ async def orchestrate() -> None:
         watch_mode_expiry_seconds=settings.watch_mode_expiry_seconds,
     )
 
+    recorder = EventRecorder(
+        settings.recorder_output_path,
+        queue_maxsize=settings.recorder_queue_maxsize,
+        enabled=settings.recorder_enabled,
+    )
+    await recorder.start()
+
+
     market_state: dict[str, UpDownMarket] = {}
     token_ids: set[str] = set()
     clob_resubscribe_event = asyncio.Event()
@@ -273,6 +282,15 @@ async def orchestrate() -> None:
 
     async def process_price(ts: float, px: float, metadata: dict[str, object]) -> None:
         nonlocal last_refresh_ts
+        recorder.record(
+            "rtds_price",
+            ts=ts,
+            price=px,
+            payload_ts=metadata.get("timestamp"),
+            received_ts=metadata.get("received_ts", time.time()),
+            divergence_pct=metadata.get("divergence_pct"),
+            spot_price=metadata.get("spot_price"),
+        )
         strategy.on_price(ts, px, metadata)
         now = int(ts)
         if (now // 60) != (last_refresh_ts // 60):
@@ -291,6 +309,18 @@ async def orchestrate() -> None:
 
         best = strategy.pick_best(now, list(market_state.values()), {})
         if best and best.ev > 0:
+            recorder.record(
+                "decision",
+                ts=ts,
+                p_hat=best.p_hat,
+                ask=best.ask,
+                fee_cost=best.fee_cost,
+                slippage_cost=best.slippage_cost,
+                ev=best.ev,
+                horizon=best.market.horizon_minutes,
+                token_id=best.token_id,
+                notional=settings.quote_size_usd,
+            )
             if bool(kill_switch_state["active"]):
                 logger.warning(
                     "order_blocked_by_divergence_kill_switch",
@@ -307,6 +337,17 @@ async def orchestrate() -> None:
                 direction=best.direction,
                 horizon=best.market.horizon_minutes,
             )
+            attempt_size = settings.quote_size_usd / max(best.ask, 1e-9)
+            recorder.record(
+                "order_attempt",
+                ts=time.time(),
+                token_id=best.token_id,
+                px=best.ask,
+                size=attempt_size,
+                tif="FOK",
+                notional=settings.quote_size_usd,
+                mode="dry" if settings.dry_run else "live",
+            )
             HAMMER_ATTEMPTED.inc()
             filled = await trader.buy_fok(
                 best.token_id,
@@ -314,6 +355,13 @@ async def orchestrate() -> None:
                 str(best.market.horizon_minutes),
                 market_slug=best.market.slug,
                 market_start_epoch=best.market.start_epoch,
+            )
+            recorder.record(
+                "order_result",
+                ts=time.time(),
+                ok=filled,
+                response_summary="filled" if filled else "rejected_or_failed",
+                failure_type=None if filled else "rejected_or_failed",
             )
             if filled:
                 HAMMER_FILLED.inc()
@@ -401,6 +449,23 @@ async def orchestrate() -> None:
                     with contextlib.suppress(asyncio.CancelledError):
                         await resubscribe_task
                     top = next_book_task.result()
+                    bids_levels = [{"price": top.best_bid, "size": top.best_bid_size}] if top.best_bid is not None else []
+                    asks_levels = [{"price": top.best_ask, "size": top.best_ask_size}] if top.best_ask is not None else []
+                    recorder.record(
+                        "clob_book",
+                        ts=top.ts,
+                        token_id=top.token_id,
+                        bids_levels=bids_levels,
+                        asks_levels=asks_levels,
+                    )
+                    recorder.record(
+                        "clob_price_change",
+                        ts=top.ts,
+                        token_id=top.token_id,
+                        best_bid=top.best_bid,
+                        best_ask=top.best_ask,
+                        schema_version=1,
+                    )
                     strategy.on_book(
                         top.token_id,
                         top.best_bid,
@@ -458,6 +523,7 @@ async def orchestrate() -> None:
             fallback_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await fallback_task
+        await recorder.stop()
         await gamma.close()
 
 
