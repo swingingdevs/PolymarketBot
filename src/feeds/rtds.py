@@ -78,6 +78,7 @@ class RTDSFeed:
     async def stream_prices(self) -> AsyncIterator[tuple[float, float, dict[str, object]]]:
         """Yield (timestamp, price, metadata) from Chainlink RTDS feed."""
         logger.info("rtds_startup_feed", topic=self.topic, symbol=self.symbol)
+        normalized_symbol = self.symbol.lower()
 
         backoff = self.reconnect_delay_min
         stable_since: float | None = None
@@ -87,12 +88,14 @@ class RTDSFeed:
             try:
                 async with websockets.connect(self.ws_url, ping_interval=None, ping_timeout=None) as ws:
                     sub = {
-                        "type": "subscribe",
-                        "payload": {
-                            "market": "chainlink",
-                            "topic": self.topic,
-                            "symbols": [self.symbol],
-                        },
+                        "action": "subscribe",
+                        "subscriptions": [
+                            {
+                                "topic": self.topic,
+                                "type": "market",
+                                "filters": json.dumps({"symbol": self.symbol}),
+                            }
+                        ],
                     }
                     await ws.send(json.dumps(sub))
                     logger.info("rtds_subscribed", subscription=sub)
@@ -103,16 +106,18 @@ class RTDSFeed:
                         async for message in ws:
                             data = json.loads(message)
                             payload = data.get("payload", {})
-                            if payload.get("symbol") != self.symbol:
+                            payload_symbol = str(payload.get("symbol", "")).lower()
+                            if payload_symbol != normalized_symbol:
                                 continue
 
-                            px = payload.get("price")
-                            ts = payload.get("timestamp")
+                            px = payload.get("value")
+                            ts = payload.get("timestamp_ms")
                             if px is None or ts is None:
                                 continue
 
                             chainlink_price = float(px)
-                            price_ts = float(ts)
+                            price_ts_ms = float(ts)
+                            price_ts = price_ts_ms / 1000.0
                             self._last_price_ts = price_ts
                             metadata: dict[str, object] = {
                                 "source": "chainlink_rtds",
@@ -120,6 +125,8 @@ class RTDSFeed:
                                 "market": payload.get("market", "chainlink"),
                                 "received_ts": time.time(),
                                 "timestamp": price_ts,
+                                "timestamp_ms": price_ts_ms,
+                                "timestamp_s": price_ts,
                             }
 
                             binance_price = self._extract_binance_price(payload)
