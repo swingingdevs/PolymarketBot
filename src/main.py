@@ -308,7 +308,13 @@ async def orchestrate() -> None:
                 horizon=best.market.horizon_minutes,
             )
             HAMMER_ATTEMPTED.inc()
-            filled = await trader.buy_fok(best.token_id, best.ask, str(best.market.horizon_minutes))
+            filled = await trader.buy_fok(
+                best.token_id,
+                best.ask,
+                str(best.market.horizon_minutes),
+                market_slug=best.market.slug,
+                market_start_epoch=best.market.start_epoch,
+            )
             if filled:
                 HAMMER_FILLED.inc()
 
