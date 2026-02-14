@@ -55,3 +55,38 @@ def test_extract_realized_pnl_from_nested_response(tmp_path):
     }
 
     assert trader._extract_realized_pnl(response) == 3.5
+
+
+def test_rejects_when_market_open_exposure_cap_exceeded(tmp_path):
+    settings = Settings(
+        dry_run=True,
+        quote_size_usd=60.0,
+        max_usd_per_trade=100.0,
+        max_open_exposure_per_market=100.0,
+        max_total_open_exposure=1_000.0,
+        risk_state_path=str(tmp_path / "risk_state.json"),
+    )
+    trader = Trader(settings)
+
+    first = trader._check_risk(notional_usd=60.0, token_id="t1", horizon="5m", direction="BUY")
+    trader._apply_open_exposure_delta("t1", "5m", "BUY", 60.0)
+    second = trader._check_risk(notional_usd=60.0, token_id="t1", horizon="5m", direction="BUY")
+
+    assert first is True
+    assert second is False
+
+
+def test_rejects_when_global_open_exposure_cap_exceeded(tmp_path):
+    settings = Settings(
+        dry_run=True,
+        max_open_exposure_per_market=500.0,
+        max_usd_per_trade=100.0,
+        max_total_open_exposure=100.0,
+        risk_state_path=str(tmp_path / "risk_state.json"),
+    )
+    trader = Trader(settings)
+
+    trader._apply_open_exposure_delta("t1", "5m", "BUY", 60.0)
+    trader._apply_open_exposure_delta("t2", "15m", "BUY", 30.0)
+
+    assert trader._check_risk(notional_usd=15.0, token_id="t3", horizon="30m", direction="BUY") is False
