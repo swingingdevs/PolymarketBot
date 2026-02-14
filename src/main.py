@@ -301,6 +301,13 @@ async def orchestrate() -> None:
                         fill_prob=top.fill_prob,
                         ts=top.ts,
                     )
+                    constraints = clob.get_token_constraints(top.token_id)
+                    if constraints is not None:
+                        trader.update_token_constraints(
+                            top.token_id,
+                            min_order_size=constraints.min_order_size,
+                            tick_size=constraints.tick_size,
+                        )
                     continue
 
                 next_book_task.cancel()

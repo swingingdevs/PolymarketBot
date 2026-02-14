@@ -92,6 +92,7 @@ class Settings(BaseSettings):
     order_submit_timeout_seconds: float = 5.0
     metrics_host: str = "0.0.0.0"
     metrics_port: int = 9102
+    settings_profile: str = "paper"
 
     @model_validator(mode="after")
     def apply_profile_defaults(self) -> "Settings":
