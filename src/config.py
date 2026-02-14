@@ -56,17 +56,28 @@ class Settings(BaseSettings):
     chainlink_direct_api_url: str = "https://api.chain.link/streams/btc-usd"
     use_fallback_feed: bool = True
 
-    settings_profile: str = "paper"
-    watch_return_threshold: float | None = None
-    hammer_secs: int | None = None
-    d_min: float | None = None
-    max_entry_price: float | None = None
-    fee_bps: float | None = None
+    watch_return_threshold: float = 0.005
+    watch_rolling_window_seconds: int = 60
+    watch_zscore_threshold: float = 0.0
+    watch_mode_expiry_seconds: int = 60
+    hammer_secs: int = 15
+    d_min: float = 5.0
+    max_entry_price: float = 0.97
+    fee_bps: float = 10.0
+
+    calibration_method: str = "none"
+    calibration_input: str = "p_hat"
+    calibration_params_path: str = ""
+    calibration_logistic_coef: float = 1.0
+    calibration_logistic_intercept: float = 0.0
 
     dry_run: bool = True
     max_usd_per_trade: float = 50.0
     max_daily_loss: float = 250.0
     max_trades_per_hour: int = 4
+    max_open_exposure_per_market: float = 100.0
+    max_total_open_exposure: float = 500.0
+    exposure_reconcile_every_n_trades: int = 10
     risk_state_path: str = ".state/risk_state.json"
 
     clob_host: str = "https://clob.polymarket.com"

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-import time
+import asyncio
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +29,13 @@ class RiskState:
     trades_this_hour: int = 0
     last_trade_hour: int = -1
     last_pnl_reset_date_utc: str = ""
+    open_exposure_usd_by_market: dict[str, float] | None = None
+    total_open_notional_usd: float = 0.0
+    trades_since_reconcile: int = 0
+
+    def __post_init__(self) -> None:
+        if self.open_exposure_usd_by_market is None:
+            self.open_exposure_usd_by_market = {}
 
 
 class Trader:
@@ -57,14 +64,57 @@ class Trader:
             logger.warning("risk_state_load_failed", path=str(self._risk_state_path))
             return RiskState()
 
+        open_exposure = payload.get("open_exposure_usd_by_market")
+        if not isinstance(open_exposure, dict):
+            open_exposure = self._migrate_open_exposure_payload(payload.get("open_exposure"))
+
         state = RiskState(
             daily_realized_pnl=float(payload.get("daily_realized_pnl", 0.0)),
             trades_this_hour=int(payload.get("trades_this_hour", 0)),
             last_trade_hour=int(payload.get("last_trade_hour", -1)),
             last_pnl_reset_date_utc=str(payload.get("last_pnl_reset_date_utc", "")),
+            open_exposure_usd_by_market=self._normalize_open_exposure(open_exposure),
+            total_open_notional_usd=float(payload.get("total_open_notional_usd", 0.0)),
+            trades_since_reconcile=int(payload.get("trades_since_reconcile", 0)),
         )
+        if state.total_open_notional_usd <= 0 and state.open_exposure_usd_by_market:
+            state.total_open_notional_usd = sum(state.open_exposure_usd_by_market.values())
         logger.info("risk_state_loaded", path=str(self._risk_state_path), risk_state=asdict(state))
         return state
+
+    def _normalize_open_exposure(self, raw: Any) -> dict[str, float]:
+        if not isinstance(raw, dict):
+            return {}
+
+        normalized: dict[str, float] = {}
+        for key, value in raw.items():
+            if not isinstance(key, str):
+                continue
+            try:
+                normalized[key] = max(0.0, float(value))
+            except (TypeError, ValueError):
+                continue
+        return normalized
+
+    def _migrate_open_exposure_payload(self, raw: Any) -> dict[str, float]:
+        migrated: dict[str, float] = {}
+        if not isinstance(raw, dict):
+            return migrated
+
+        for token_id, by_horizon in raw.items():
+            if not isinstance(token_id, str) or not isinstance(by_horizon, dict):
+                continue
+            for horizon, by_direction in by_horizon.items():
+                if not isinstance(horizon, str) or not isinstance(by_direction, dict):
+                    continue
+                for direction, notional in by_direction.items():
+                    key = self._market_exposure_key(token_id, horizon, str(direction))
+                    try:
+                        migrated[key] = max(0.0, float(notional))
+                    except (TypeError, ValueError):
+                        continue
+
+        return migrated
 
     def _persist_risk_state(self) -> None:
         try:
@@ -86,12 +136,22 @@ class Trader:
         self._persist_risk_state()
         logger.info("risk_daily_pnl_reset", reset_date_utc=today_utc)
 
-    def _risk_blocked(self, notional_usd: float) -> bool:
+    @staticmethod
+    def _market_exposure_key(token_id: str, horizon: str, direction: str) -> str:
+        return f"{token_id}|{horizon}|{direction.upper()}"
+
+    def _risk_blocked(self, notional_usd: float, token_id: str, horizon: str, direction: str) -> bool:
         if notional_usd > self.settings.max_usd_per_trade:
             return True
         if self.risk.daily_realized_pnl <= -abs(self.settings.max_daily_loss):
             return True
         if self.risk.trades_this_hour >= self.settings.max_trades_per_hour:
+            return True
+        market_key = self._market_exposure_key(token_id, horizon, direction)
+        next_market_exposure = self.risk.open_exposure_usd_by_market.get(market_key, 0.0) + notional_usd
+        if next_market_exposure > self.settings.max_open_exposure_per_market:
+            return True
+        if (self.risk.total_open_notional_usd + notional_usd) > self.settings.max_total_open_exposure:
             return True
         return False
 
@@ -99,7 +159,7 @@ class Trader:
         DAILY_REALIZED_PNL.set(self.risk.daily_realized_pnl)
         RISK_LIMIT_BLOCKED.set(1 if risk_blocked else 0)
 
-    def _check_risk(self, notional_usd: float) -> bool:
+    def _check_risk(self, notional_usd: float, token_id: str, horizon: str, direction: str) -> bool:
         self._reset_daily_pnl_if_needed()
         now_hour = datetime.now(timezone.utc).hour
         if now_hour != self.risk.last_trade_hour:
@@ -107,7 +167,7 @@ class Trader:
             self.risk.trades_this_hour = 0
             self._persist_risk_state()
 
-        blocked = self._risk_blocked(notional_usd)
+        blocked = self._risk_blocked(notional_usd, token_id=token_id, horizon=horizon, direction=direction)
         self._update_risk_metrics(risk_blocked=blocked)
         return not blocked
 
@@ -138,14 +198,121 @@ class Trader:
         pnl += self._extract_realized_pnl(payload.get("settlements"))
         return pnl
 
-    def _record_post_trade_updates(self, resp: Any) -> None:
+    def _extract_fill_notional(self, payload: Any) -> tuple[float, bool]:
+        if not isinstance(payload, dict):
+            return 0.0, False
+
+        fills = payload.get("fills")
+        if not isinstance(fills, list) or not fills:
+            return 0.0, False
+
+        notional = 0.0
+        complete = True
+        for fill in fills:
+            if not isinstance(fill, dict):
+                complete = False
+                continue
+            px = fill.get("price")
+            size = fill.get("size")
+            fill_notional = fill.get("notional")
+            if fill_notional is not None:
+                try:
+                    notional += abs(float(fill_notional))
+                    continue
+                except (TypeError, ValueError):
+                    complete = False
+            if px is None or size is None:
+                complete = False
+                continue
+            try:
+                notional += abs(float(px) * float(size))
+            except (TypeError, ValueError):
+                complete = False
+
+        return notional, complete
+
+    def _apply_open_exposure_delta(self, token_id: str, horizon: str, direction: str, delta_usd: float) -> None:
+        if delta_usd == 0:
+            return
+        key = self._market_exposure_key(token_id, horizon, direction)
+        current = self.risk.open_exposure_usd_by_market.get(key, 0.0)
+        updated = max(0.0, current + delta_usd)
+        if updated == 0.0:
+            self.risk.open_exposure_usd_by_market.pop(key, None)
+        else:
+            self.risk.open_exposure_usd_by_market[key] = updated
+        self.risk.total_open_notional_usd = max(
+            0.0,
+            sum(self.risk.open_exposure_usd_by_market.values()),
+        )
+
+    def _maybe_reconcile_exposure_from_exchange(self, force: bool = False) -> None:
+        self.risk.trades_since_reconcile += 1
+        if not force and self.risk.trades_since_reconcile < self.settings.exposure_reconcile_every_n_trades:
+            return
+        if self.client is None:
+            return
+
+        for method_name in ("get_open_positions", "get_positions", "get_current_positions"):
+            method = getattr(self.client, method_name, None)
+            if method is None:
+                continue
+            try:
+                payload = method()
+            except Exception:
+                continue
+
+            positions = payload if isinstance(payload, list) else payload.get("positions") if isinstance(payload, dict) else []
+            if not isinstance(positions, list):
+                continue
+
+            rebuilt: dict[str, float] = {}
+            for position in positions:
+                if not isinstance(position, dict):
+                    continue
+                token_id = str(position.get("token_id") or position.get("tokenId") or "")
+                if not token_id:
+                    continue
+                horizon = str(position.get("horizon") or "unknown")
+                direction = str(position.get("direction") or "BUY")
+                try:
+                    notional = abs(
+                        float(
+                            position.get("notional")
+                            or position.get("notional_usd")
+                            or (float(position.get("price")) * float(position.get("size")))
+                        )
+                    )
+                except (TypeError, ValueError):
+                    continue
+                rebuilt[self._market_exposure_key(token_id, horizon, direction)] = notional
+
+            self.risk.open_exposure_usd_by_market = rebuilt
+            self.risk.total_open_notional_usd = sum(rebuilt.values())
+            self.risk.trades_since_reconcile = 0
+            return
+
+    def _record_post_trade_updates(
+        self,
+        resp: Any,
+        *,
+        token_id: str,
+        horizon: str,
+        direction: str,
+        fallback_notional_usd: float,
+    ) -> None:
         self._reset_daily_pnl_if_needed()
         realized_pnl = self._extract_realized_pnl(resp)
         if realized_pnl:
             self.risk.daily_realized_pnl += realized_pnl
 
+        filled_notional, complete_fill_details = self._extract_fill_notional(resp)
+        applied_notional = filled_notional if filled_notional > 0 else fallback_notional_usd
+        self._apply_open_exposure_delta(token_id, horizon, direction, applied_notional)
+        self._maybe_reconcile_exposure_from_exchange(force=not complete_fill_details)
+
         self._persist_risk_state()
-        self._update_risk_metrics(risk_blocked=self._risk_blocked(0.0))
+        self._update_risk_metrics(risk_blocked=self._risk_blocked(0.0, token_id=token_id, horizon=horizon, direction=direction))
 
     @staticmethod
     def _classify_submit_exception(exc: Exception) -> str:
@@ -168,7 +335,7 @@ class Trader:
         px = round_price_to_tick(ask, 0.001)
 
         notional = size * px
-        if not self._check_risk(notional):
+        if not self._check_risk(notional, token_id=token_id, horizon=horizon, direction="BUY"):
             logger.info(
                 "risk_reject",
                 token_id=token_id,
@@ -177,6 +344,10 @@ class Trader:
                 daily_realized_pnl=self.risk.daily_realized_pnl,
                 max_daily_loss=self.settings.max_daily_loss,
                 trades_this_hour=self.risk.trades_this_hour,
+                open_exposure_market=self.risk.open_exposure_usd_by_market.get(
+                    self._market_exposure_key(token_id, horizon, "BUY"), 0.0
+                ),
+                total_open_notional_usd=self.risk.total_open_notional_usd,
             )
             TRADES.labels(status="rejected", side="buy", horizon=horizon).inc()
             return False
@@ -184,8 +355,13 @@ class Trader:
         if self.settings.dry_run:
             logger.info("dry_run_order", token_id=token_id, ask=px, size=size)
             self.risk.trades_this_hour += 1
-            self._persist_risk_state()
-            self._update_risk_metrics(risk_blocked=self._risk_blocked(0.0))
+            self._record_post_trade_updates(
+                {"fills": [{"price": px, "size": size}]},
+                token_id=token_id,
+                horizon=horizon,
+                direction="BUY",
+                fallback_notional_usd=notional,
+            )
             TRADES.labels(status="dry_run", side="buy", horizon=horizon).inc()
             return True
 
@@ -226,7 +402,13 @@ class Trader:
         ok = bool(resp)
         if ok:
             self.risk.trades_this_hour += 1
-            self._record_post_trade_updates(resp)
+            self._record_post_trade_updates(
+                resp,
+                token_id=token_id,
+                horizon=horizon,
+                direction="BUY",
+                fallback_notional_usd=notional,
+            )
             TRADES.labels(status="filled", side="buy", horizon=horizon).inc()
         else:
             TRADES.labels(status="rejected", side="buy", horizon=horizon).inc()
@@ -235,6 +417,6 @@ class Trader:
             ok=ok,
             response=resp,
             daily_realized_pnl=self.risk.daily_realized_pnl,
-            risk_limit_blocked=self._risk_blocked(0.0),
+            risk_limit_blocked=self._risk_blocked(0.0, token_id=token_id, horizon=horizon, direction="BUY"),
         )
         return ok

@@ -19,6 +19,9 @@ class BookTop:
     best_bid: float | None
     best_ask: float | None
     ts: float
+    best_bid_size: float | None = None
+    best_ask_size: float | None = None
+    fill_prob: float | None = None
 
 
 class CLOBWebSocket:
@@ -98,9 +101,22 @@ class CLOBWebSocket:
                             asks = data.get("asks", [])
                             bid = float(bids[0][0]) if bids else None
                             ask = float(asks[0][0]) if asks else None
+                            bid_size = float(bids[0][1]) if bids and len(bids[0]) > 1 else None
+                            ask_size = float(asks[0][1]) if asks and len(asks[0]) > 1 else None
+                            fill_prob = data.get("fill_prob")
+                            if fill_prob is not None:
+                                fill_prob = float(fill_prob)
                             ts = float(data.get("timestamp", time.time()))
                             last_update[0] = time.time()
-                            yield BookTop(token_id=token_id, best_bid=bid, best_ask=ask, ts=ts)
+                            yield BookTop(
+                                token_id=token_id,
+                                best_bid=bid,
+                                best_ask=ask,
+                                best_bid_size=bid_size,
+                                best_ask_size=ask_size,
+                                fill_prob=fill_prob,
+                                ts=ts,
+                            )
 
                             backoff = self.reconnect_delay_min
                     finally:
