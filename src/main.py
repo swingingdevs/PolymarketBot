@@ -22,6 +22,50 @@ from strategy.state_machine import StrategyStateMachine
 logger = structlog.get_logger(__name__)
 
 
+def update_divergence_kill_switch(
+    *,
+    ts: float,
+    metadata: dict[str, object],
+    kill_switch_state: dict[str, object],
+    settings: Settings,
+) -> None:
+    divergence_raw = metadata.get("divergence_pct")
+    divergence_pct = float(divergence_raw) if divergence_raw is not None else None
+    kill_switch_active = bool(kill_switch_state["active"])
+
+    if divergence_pct is None:
+        kill_switch_state["breach_started_at"] = None
+        return
+
+    kill_switch_state["last_divergence_pct"] = divergence_pct
+    threshold = settings.divergence_threshold_pct
+
+    if divergence_pct >= threshold:
+        breach_started_at = kill_switch_state["breach_started_at"]
+        if breach_started_at is None:
+            kill_switch_state["breach_started_at"] = ts
+        elif not kill_switch_active and (ts - float(breach_started_at)) >= settings.divergence_sustain_seconds:
+            kill_switch_state["active"] = True
+            KILL_SWITCH_ACTIVE.set(1)
+            logger.error(
+                "divergence_kill_switch_activated",
+                divergence_pct=divergence_pct,
+                threshold_pct=threshold,
+                sustain_seconds=settings.divergence_sustain_seconds,
+            )
+        return
+
+    kill_switch_state["breach_started_at"] = None
+    if kill_switch_active:
+        kill_switch_state["active"] = False
+        KILL_SWITCH_ACTIVE.set(0)
+        logger.info(
+            "divergence_kill_switch_cleared",
+            divergence_pct=divergence_pct,
+            threshold_pct=threshold,
+        )
+
+
 def floor_to_boundary(ts: int, seconds: int) -> int:
     return ts - (ts % seconds)
 
@@ -126,6 +170,8 @@ async def orchestrate() -> None:
         settings.rtds_ws_url,
         settings.symbol,
         topic=settings.rtds_topic,
+        spot_topic=settings.rtds_spot_topic,
+        spot_max_age_seconds=settings.rtds_spot_max_age_seconds,
         ping_interval=settings.rtds_ping_interval,
         pong_timeout=settings.rtds_pong_timeout,
         reconnect_delay_min=settings.rtds_reconnect_delay_min,
@@ -231,36 +277,12 @@ async def orchestrate() -> None:
             await refresh_markets(now)
             last_refresh_ts = now
 
-        divergence_raw = metadata.get("divergence_pct")
-        divergence_pct = float(divergence_raw) if divergence_raw is not None else None
-        kill_switch_active = bool(kill_switch_state["active"])
-
-        if divergence_pct is not None:
-            kill_switch_state["last_divergence_pct"] = divergence_pct
-            threshold = settings.divergence_threshold_pct
-            if divergence_pct >= threshold:
-                breach_started_at = kill_switch_state["breach_started_at"]
-                if breach_started_at is None:
-                    kill_switch_state["breach_started_at"] = ts
-                elif not kill_switch_active and (ts - float(breach_started_at)) >= settings.divergence_sustain_seconds:
-                    kill_switch_state["active"] = True
-                    KILL_SWITCH_ACTIVE.set(1)
-                    logger.error(
-                        "divergence_kill_switch_activated",
-                        divergence_pct=divergence_pct,
-                        threshold_pct=threshold,
-                        sustain_seconds=settings.divergence_sustain_seconds,
-                    )
-            else:
-                kill_switch_state["breach_started_at"] = None
-                if kill_switch_active:
-                    kill_switch_state["active"] = False
-                    KILL_SWITCH_ACTIVE.set(0)
-                    logger.info(
-                        "divergence_kill_switch_cleared",
-                        divergence_pct=divergence_pct,
-                        threshold_pct=threshold,
-                    )
+        update_divergence_kill_switch(
+            ts=ts,
+            metadata=metadata,
+            kill_switch_state=kill_switch_state,
+            settings=settings,
+        )
 
         if not strategy.watch_mode:
             return

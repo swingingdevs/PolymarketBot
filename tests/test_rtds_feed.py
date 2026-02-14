@@ -98,11 +98,82 @@ def test_rtds_subscribe_both_topics_and_timestamp_normalization(monkeypatch: pyt
     subscribe = json.loads(ws.sent_payloads[0])
     assert subscribe["action"] == "subscribe"
     topics = [item["topic"] for item in subscribe["subscriptions"]]
-    assert topics == ["crypto_prices_chainlink"]
+    assert topics == ["crypto_prices_chainlink", "crypto_prices"]
     assert subscribe["subscriptions"][0]["type"] == "*"
     for sub in subscribe["subscriptions"]:
         assert json.loads(sub["filters"]) == {"symbol": "btc/usd"}
 
+
+
+def test_rtds_divergence_only_when_spot_is_fresh(monkeypatch: pytest.MonkeyPatch) -> None:
+    fresh_ws = _FakeWebSocket(
+        [
+            json.dumps(
+                {
+                    "topic": "crypto_prices",
+                    "payload": {
+                        "symbol": "btc/usd",
+                        "value": "100.0",
+                        "timestamp": 1000.0,
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "topic": "crypto_prices_chainlink",
+                    "payload": {
+                        "symbol": "btc/usd",
+                        "value": "101.0",
+                        "timestamp": 1001.0,
+                    },
+                }
+            ),
+        ]
+    )
+    monkeypatch.setattr("feeds.rtds.websockets.connect", _connect_factory(fresh_ws))
+
+    fresh_feed = RTDSFeed("wss://unused", symbol="btc/usd", spot_max_age_seconds=2.0, log_price_comparison=False)
+
+    async def _run_once(feed: RTDSFeed):
+        stream = feed.stream_prices()
+        item = await stream.__anext__()
+        await stream.aclose()
+        return item
+
+    _ts, _price, fresh_metadata = asyncio.run(_run_once(fresh_feed))
+    assert fresh_metadata["spot_price"] == 100.0
+    assert "divergence_pct" in fresh_metadata
+
+    stale_ws = _FakeWebSocket(
+        [
+            json.dumps(
+                {
+                    "topic": "crypto_prices",
+                    "payload": {
+                        "symbol": "btc/usd",
+                        "value": "100.0",
+                        "timestamp": 995.0,
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "topic": "crypto_prices_chainlink",
+                    "payload": {
+                        "symbol": "btc/usd",
+                        "value": "101.0",
+                        "timestamp": 1001.0,
+                    },
+                }
+            ),
+        ]
+    )
+    monkeypatch.setattr("feeds.rtds.websockets.connect", _connect_factory(stale_ws))
+
+    stale_feed = RTDSFeed("wss://unused", symbol="btc/usd", spot_max_age_seconds=2.0, log_price_comparison=False)
+    _ts, _price, stale_metadata = asyncio.run(_run_once(stale_feed))
+    assert "spot_price" not in stale_metadata
+    assert "divergence_pct" not in stale_metadata
 
 def test_rtds_staleness_uses_normalized_timestamps(monkeypatch: pytest.MonkeyPatch) -> None:
     ws = _FakeWebSocket(
