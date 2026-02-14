@@ -42,4 +42,9 @@ def test_unsafe_configuration_rejected() -> None:
     with pytest.raises(ValueError):
         Settings(max_entry_price=0.995)
     with pytest.raises(ValueError):
-        Settings(fee_bps=0)
+        Settings(fee_bps=-0.1)
+
+
+def test_zero_fee_bps_is_allowed() -> None:
+    settings = Settings(fee_bps=0)
+    assert settings.fee_bps == 0

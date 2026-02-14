@@ -6,8 +6,9 @@ from dataclasses import dataclass, field
 
 import structlog
 
-from metrics import CURRENT_EV, WATCH_EVENTS
 from markets.gamma_cache import UpDownMarket
+from markets.token_metadata_cache import TokenMetadataCache
+from metrics import CURRENT_EV, WATCH_EVENTS
 from strategy.calibration import CalibrationInput, IdentityCalibrator, ProbabilityCalibrator
 from utils.price_validation import is_price_stale, validate_price_source
 
@@ -53,6 +54,10 @@ class StrategyStateMachine:
         fee_bps: float,
         probability_calibrator: ProbabilityCalibrator | None = None,
         calibration_input: CalibrationInput = "p_hat",
+        token_metadata_cache: TokenMetadataCache | None = None,
+        rolling_window_seconds: int = 60,
+        watch_zscore_threshold: float = 0.0,
+        watch_mode_expiry_seconds: int = 60,
     ) -> None:
         self.threshold = threshold
         self.hammer_secs = hammer_secs
@@ -61,6 +66,10 @@ class StrategyStateMachine:
         self.fee_bps = fee_bps
         self.probability_calibrator = probability_calibrator or IdentityCalibrator()
         self.calibration_input = calibration_input
+        self.token_metadata_cache = token_metadata_cache
+        self.rolling_window_seconds = max(2, rolling_window_seconds)
+        self.watch_zscore_threshold = watch_zscore_threshold
+        self.watch_mode_expiry_seconds = max(1, watch_mode_expiry_seconds)
 
         self.last_price: float | None = None
         self.curr_minute_start: int | None = None
@@ -197,6 +206,25 @@ class StrategyStateMachine:
         if trigger_by_return or trigger_by_zscore:
             self._set_watch_mode(True, sec)
 
+
+    def _rolling_returns(self) -> list[float]:
+        rows = list(self.prices_1s)
+        rets: list[float] = []
+        for idx in range(1, len(rows)):
+            prev_price = rows[idx - 1][1]
+            curr_price = rows[idx][1]
+            if prev_price <= 0:
+                continue
+            rets.append((curr_price / prev_price) - 1)
+        return rets
+
+    def _set_watch_mode(self, enabled: bool, ts: int) -> None:
+        if enabled == self.watch_mode:
+            return
+        self.watch_mode = enabled
+        self.watch_mode_started_at = ts if enabled else None
+        WATCH_EVENTS.inc()
+
     def in_hammer_window(self, now_ts: int, end_epoch: int) -> bool:
         return 0 <= (end_epoch - now_ts) <= self.hammer_secs
 
@@ -224,9 +252,10 @@ class StrategyStateMachine:
         market: UpDownMarket,
         direction: str,
         ask: float,
-        bid: float | None,
-        ask_size: float | None,
-        fill_prob: float | None,
+        bid: float | None = None,
+        ask_size: float | None = None,
+        fill_prob: float | None = None,
+        token_id: str | None = None,
     ) -> Candidate | None:
         curr = self.last_price
         if curr is None or ask <= 0:
@@ -257,7 +286,10 @@ class StrategyStateMachine:
         else:
             p_hat = self.probability_calibrator.calibrate(raw_p_hat)
 
-        fee_cost = self.fee_bps / 10000.0
+        fee_bps = self.fee_bps
+        if token_id and self.token_metadata_cache is not None:
+            fee_bps = self.token_metadata_cache.get_fee_rate_bps(token_id, fallback_fee_bps=self.fee_bps)
+        fee_cost = fee_bps / 10000.0
         spread = max(0.0, ask - bid) if bid is not None else 0.0
         spread_penalty = 0.5 * spread
         depth_penalty = 0.0
@@ -265,7 +297,7 @@ class StrategyStateMachine:
             depth_penalty = max(0.0, 1.0 - ask_size) * spread
         slippage_cost = spread_penalty + depth_penalty
 
-        effective_fill_prob = 0.5 if fill_prob is None else min(1.0, max(0.0, fill_prob))
+        effective_fill_prob = 1.0 if fill_prob is None else min(1.0, max(0.0, fill_prob))
         ev_exec = p_hat - ask - fee_cost - slippage_cost
         ev = ev_exec * effective_fill_prob
         return Candidate(
@@ -304,6 +336,7 @@ class StrategyStateMachine:
                     bid=book.bid,
                     ask_size=book.ask_size,
                     fill_prob=book.fill_prob,
+                    token_id=tid,
                 )
                 if cand:
                     cand.token_id = tid

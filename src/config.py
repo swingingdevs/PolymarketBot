@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     clob_book_staleness_threshold: int = 10
     chainlink_direct_api_url: str = "https://api.chain.link/streams/btc-usd"
     use_fallback_feed: bool = True
+    settings_profile: str = "live"
 
     watch_return_threshold: float = 0.005
     settings_profile: str = "paper"
@@ -92,6 +93,7 @@ class Settings(BaseSettings):
     order_submit_timeout_seconds: float = 5.0
     metrics_host: str = "0.0.0.0"
     metrics_port: int = 9102
+    token_metadata_ttl_seconds: float = 300.0
     settings_profile: str = "paper"
 
     @model_validator(mode="after")
@@ -118,8 +120,8 @@ class Settings(BaseSettings):
             raise ValueError("Unsafe configuration: max_entry_price must be <= 0.99")
         if self.max_entry_price <= 0:
             raise ValueError("Unsafe configuration: max_entry_price must be > 0")
-        if self.fee_bps <= 0:
-            raise ValueError("Unsafe configuration: fee_bps must be > 0")
+        if self.fee_bps < 0:
+            raise ValueError("Unsafe configuration: fee_bps must be >= 0")
         if self.hammer_secs <= 0:
             raise ValueError("Unsafe configuration: hammer_secs must be > 0")
         if self.watch_return_threshold <= 0:

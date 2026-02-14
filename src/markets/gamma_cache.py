@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import aiohttp
 import structlog
+
+from markets.token_metadata_cache import TokenMetadata
 
 logger = structlog.get_logger(__name__)
 
@@ -19,6 +21,7 @@ class UpDownMarket:
     up_token_id: str
     down_token_id: str
     horizon_minutes: int
+    token_metadata_by_id: dict[str, TokenMetadata] = field(default_factory=dict)
 
 
 def build_slug(horizon_minutes: int, start_epoch: int) -> str:
@@ -70,6 +73,63 @@ class GammaCache:
         if "btc" not in question + desc or "usd" not in question + desc:
             raise ValueError("underlying is not BTC/USD")
 
+
+    @staticmethod
+    def _extract_float(value: object) -> float | None:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed
+
+    @classmethod
+    def _extract_token_metadata(cls, row: dict[str, object], token_id: str) -> TokenMetadata:
+        tick_size: float | None = None
+        fee_rate_bps: float | None = None
+
+        def first_float(payload: dict[str, object], keys: tuple[str, ...]) -> float | None:
+            for key in keys:
+                if key not in payload:
+                    continue
+                parsed = cls._extract_float(payload.get(key))
+                if parsed is not None:
+                    return parsed
+            return None
+
+        global_tick = first_float(row, ("minimum_tick_size", "minTickSize", "tickSize", "tick_size"))
+        global_fee = first_float(row, ("fee_rate_bps", "takerFeeBps", "taker_fee_bps", "baseFeeRateBps"))
+
+        token_containers = []
+        for key in ("tokens", "outcomeTokens", "outcomes"):
+            values = row.get(key)
+            if isinstance(values, list):
+                token_containers.extend(values)
+
+        for candidate in token_containers:
+            if not isinstance(candidate, dict):
+                continue
+            candidate_token_id = str(
+                candidate.get("clobTokenId")
+                or candidate.get("clob_token_id")
+                or candidate.get("tokenId")
+                or candidate.get("token_id")
+                or ""
+            )
+            if candidate_token_id != token_id:
+                continue
+
+            token_tick = first_float(candidate, ("minimum_tick_size", "minTickSize", "tickSize", "tick_size"))
+            token_fee = first_float(candidate, ("fee_rate_bps", "takerFeeBps", "taker_fee_bps", "baseFeeRateBps"))
+            tick_size = token_tick if token_tick is not None else tick_size
+            fee_rate_bps = token_fee if token_fee is not None else fee_rate_bps
+
+        if tick_size is None:
+            tick_size = global_tick
+        if fee_rate_bps is None:
+            fee_rate_bps = global_fee
+
+        return TokenMetadata(tick_size=tick_size, fee_rate_bps=fee_rate_bps)
+
     async def get_market(self, horizon_minutes: int, start_epoch: int) -> UpDownMarket:
         slug = build_slug(horizon_minutes, start_epoch)
         now = int(time.time())
@@ -113,6 +173,11 @@ class GammaCache:
         if not up or not down:
             raise ValueError(f"Missing up/down outcomes for slug={slug}")
 
+        token_metadata = {
+            up: self._extract_token_metadata(row, up),
+            down: self._extract_token_metadata(row, down),
+        }
+
         market = UpDownMarket(
             slug=slug,
             start_epoch=start_epoch,
@@ -120,6 +185,7 @@ class GammaCache:
             up_token_id=up,
             down_token_id=down,
             horizon_minutes=horizon_minutes,
+            token_metadata_by_id=token_metadata,
         )
         self._cache[slug] = (market, market.end_epoch)
 

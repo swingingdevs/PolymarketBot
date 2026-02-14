@@ -9,6 +9,7 @@ import pytest
 
 from config import Settings
 from execution.trader import Trader
+from markets.token_metadata_cache import TokenMetadata, TokenMetadataCache
 from feeds import clob_ws
 from feeds.clob_ws import BookTop, CLOBWebSocket
 from main import stream_clob_with_resubscribe, stream_prices_with_fallback

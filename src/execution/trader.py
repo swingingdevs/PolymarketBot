@@ -12,6 +12,7 @@ from typing import Any
 import structlog
 
 from config import Settings
+from markets.token_metadata_cache import TokenMetadataCache
 from metrics import DAILY_REALIZED_PNL, RISK_LIMIT_BLOCKED, TRADES
 from utils.rounding import round_size_to_step
 
@@ -49,8 +50,9 @@ class TokenConstraints:
 
 
 class Trader:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, token_metadata_cache: TokenMetadataCache | None = None) -> None:
         self.settings = settings
+        self.token_metadata_cache = token_metadata_cache
         self.client = None
         self._risk_state_path = Path(settings.risk_state_path)
         self.risk = self._load_risk_state()
