@@ -66,3 +66,14 @@ def test_price_stale_after_seconds_can_be_configured_from_env(monkeypatch: pytes
 def test_spot_quorum_min_sources_must_be_at_least_two() -> None:
     with pytest.raises(ValueError):
         Settings(spot_quorum_min_sources=1)
+
+
+def test_fee_rate_ttl_seconds_must_be_positive() -> None:
+    with pytest.raises(ValueError):
+        Settings(fee_rate_ttl_seconds=0)
+
+
+def test_fee_rate_ttl_seconds_can_be_configured_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FEE_RATE_TTL_SECONDS", "120")
+    settings = Settings()
+    assert settings.fee_rate_ttl_seconds == 120.0
