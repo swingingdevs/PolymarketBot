@@ -52,7 +52,9 @@ class CLOBWebSocket:
         self.pong_timeout = pong_timeout
         self.reconnect_delay_min = reconnect_delay_min
         self.reconnect_delay_max = reconnect_delay_max
-        self.book_staleness_threshold = float(stale_after_seconds) if stale_after_seconds is not None else float(book_staleness_threshold)
+        self.book_staleness_threshold = (
+            float(stale_after_seconds) if stale_after_seconds is not None else float(book_staleness_threshold)
+        )
         self.token_metadata_cache: dict[str, TokenConstraints] = {}
         self._ws: websockets.WebSocketClientProtocol | None = None
         self._subscribed_token_ids: set[str] = set()
@@ -77,7 +79,9 @@ class CLOBWebSocket:
             return None
         return parsed if parsed > 0 else None
 
-    def _update_token_constraints(self, token_id: str, *, min_order_size: object = None, tick_size: object = None) -> bool:
+    def _update_token_constraints(
+        self, token_id: str, *, min_order_size: object = None, tick_size: object = None
+    ) -> bool:
         if not token_id:
             return False
 
@@ -142,7 +146,6 @@ class CLOBWebSocket:
                 token_ids=token_ids,
             )
             last_warning_at = time.time()
-
 
     @staticmethod
     def _extract_price_size(levels: object) -> tuple[float | None, float | None]:
@@ -300,7 +303,7 @@ class CLOBWebSocket:
     def _build_subscription_payload(self, token_ids: set[str]) -> bytes:
         token_set = frozenset(token_ids)
         if token_set != self._subscription_cache_token_ids:
-            self._subscription_cache_payload = json.dumps({"assets_ids": sorted(token_set), "type": "market"}).encode()
+            self._subscription_cache_payload = orjson.dumps({"assets_ids": sorted(token_set), "type": "market"})
             self._subscription_cache_token_ids = token_set
         return self._subscription_cache_payload if self._subscription_cache_payload is not None else b""
 
@@ -311,7 +314,7 @@ class CLOBWebSocket:
         desired = set(token_ids)
         if desired == self._subscribed_token_ids:
             return
-        await self._ws.send(orjson.dumps({"assets_ids": sorted(desired), "type": "market"}))
+        await self._ws.send(self._build_subscription_payload(desired))
         self._subscribed_token_ids = desired
 
     async def stream_books(self, token_ids: list[str]) -> AsyncIterator[BookTop]:
@@ -323,8 +326,7 @@ class CLOBWebSocket:
                 async with websockets.connect(self.ws_url, ping_interval=None, ping_timeout=None) as ws:
                     self._ws = ws
                     self._subscribed_token_ids = set(token_ids)
-                    sub = {"assets_ids": token_ids, "type": "market"}
-                    await ws.send(orjson.dumps(sub))
+                    await ws.send(self._build_subscription_payload(set(token_ids)))
                     hb_task = asyncio.create_task(self._heartbeat(ws, failed_pings))
                     last_update = [time.time()]
                     stale_task = asyncio.create_task(self._stale_watchdog(last_update, token_ids, "book"))

@@ -69,7 +69,17 @@ def test_dry_run_does_not_require_l2_creds(monkeypatch, tmp_path) -> None:
 def test_live_mode_initializes_l2_auth(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(trader_module, "ClobClient", _FakeClobClient)
 
-    trader = Trader(_build_settings(tmp_path, dry_run=False, api_key="k", api_secret="s", api_passphrase="p", signature_type=2, funder="0xfunder"))
+    trader = Trader(
+        _build_settings(
+            tmp_path,
+            dry_run=False,
+            api_key="k",
+            api_secret="s",
+            api_passphrase="p",
+            signature_type=2,
+            funder="0xfunder",
+        )
+    )
 
     assert isinstance(trader.client, _FakeClobClient)
     assert trader.client.kwargs.get("signature_type") == 2

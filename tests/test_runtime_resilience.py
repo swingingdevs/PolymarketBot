@@ -9,7 +9,6 @@ import pytest
 
 from config import Settings
 from execution.trader import Trader
-from markets.token_metadata_cache import TokenMetadata, TokenMetadataCache
 from feeds import clob_ws
 from feeds.clob_ws import BookTop, CLOBWebSocket
 from main import stream_clob_with_resubscribe, stream_prices_with_fallback, update_divergence_kill_switch
@@ -140,7 +139,9 @@ def test_clob_stale_detection_logs_warning_when_updates_stop(monkeypatch: pytest
 
     monkeypatch.setattr("feeds.clob_ws.websockets.connect", lambda *_a, **_k: FakeConnectCtx())
     monkeypatch.setattr("feeds.clob_ws.CLOBWebSocket._heartbeat", fake_heartbeat)
-    monkeypatch.setattr("feeds.clob_ws.logger.warning", lambda event, **kwargs: warnings.append({"event": event, **kwargs}))
+    monkeypatch.setattr(
+        "feeds.clob_ws.logger.warning", lambda event, **kwargs: warnings.append({"event": event, **kwargs})
+    )
 
     async def _run() -> None:
         clob = CLOBWebSocket("wss://unused", book_staleness_threshold=0.01)
@@ -182,7 +183,13 @@ class _FakeDatetime:
 
 def test_trader_risk_hourly_cap_and_daily_loss_lockout(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setattr(Settings, "settings_profile", "paper", raising=False)
-    settings = Settings(dry_run=True, risk_state_path=str(tmp_path / "risk_state.json"), max_trades_per_hour=2, quote_size_usd=10, max_daily_loss=50)
+    settings = Settings(
+        dry_run=True,
+        risk_state_path=str(tmp_path / "risk_state.json"),
+        max_trades_per_hour=2,
+        quote_size_usd=10,
+        max_daily_loss=50,
+    )
     trader = Trader(settings)
     monkeypatch.setattr("execution.trader.datetime", _FakeDatetime)
 

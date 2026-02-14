@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  qa:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .[test]
+          python -m pip install ruff black
+
+      - name: Lint (ruff + black)
+        run: |
+          ruff check src tests scripts dashboard.py
+          black --check src tests scripts dashboard.py
+
+      - name: Unit tests
+        run: pytest -q tests -k "not runtime_resilience and not rtds_feed and not clob_parser"
+
+      - name: Integration tests
+        run: pytest -q tests/test_runtime_resilience.py tests/test_rtds_feed.py tests/test_clob_parser.py
+
+      - name: Smoke test
+        run: python scripts/smoke_runtime.py

@@ -3,6 +3,7 @@ from __future__ import annotations
 try:
     from prometheus_client import Counter, Gauge, start_http_server
 except Exception:  # pragma: no cover
+
     class _NoopMetric:
         def inc(self, *_args, **_kwargs):
             return None
@@ -21,6 +22,7 @@ except Exception:  # pragma: no cover
 
     def start_http_server(*_args, **_kwargs):
         return None
+
 
 WATCH_EVENTS = Counter("bot_watch_events_total", "Number of watch triggers")
 WATCH_TRIGGERED = Counter("bot_watch_triggered_total", "Number of watch mode trigger events")

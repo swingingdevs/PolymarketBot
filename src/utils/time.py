@@ -7,4 +7,3 @@ def normalize_ts(value: object) -> float:
     if ts > 1e12:
         return ts / 1000.0
     return ts
-

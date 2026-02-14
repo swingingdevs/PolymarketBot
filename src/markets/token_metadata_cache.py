@@ -76,6 +76,3 @@ class TokenMetadataCache:
             return metadata.fee_rate_bps
         logger.debug("token_fee_rate_fallback", token_id=token_id, fallback_fee_bps=fallback_fee_bps)
         return fallback_fee_bps
-
-
-    

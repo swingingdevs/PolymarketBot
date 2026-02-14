@@ -100,7 +100,7 @@ async def main() -> None:
         log_price_comparison=False,
     )
     clob = CLOBWebSocket(
-        settings.clob_ws_url,
+        settings.clob_ws_base,
         ping_interval=settings.rtds_ping_interval,
         pong_timeout=settings.rtds_pong_timeout,
         reconnect_delay_min=settings.rtds_reconnect_delay_min,
@@ -153,7 +153,9 @@ async def main() -> None:
                     for label, token_id in (("UP", market.up_token_id), ("DOWN", market.down_token_id)):
                         snap = strategy.books.get(token_id)
                         if snap is None:
-                            print(f"[SMOKE] SNAPSHOT slug={market.slug} side={label} token={token_id} bid=None ask=None")
+                            print(
+                                f"[SMOKE] SNAPSHOT slug={market.slug} side={label} token={token_id} bid=None ask=None"
+                            )
                         else:
                             print(
                                 f"[SMOKE] SNAPSHOT slug={market.slug} side={label} token={token_id} "

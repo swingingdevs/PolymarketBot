@@ -244,7 +244,9 @@ class Trader:
         market_start_epoch: int | None = None,
         market_identity: str | None = None,
     ) -> str:
-        identity = market_identity or cls._market_identity(market_slug=market_slug, market_start_epoch=market_start_epoch)
+        identity = market_identity or cls._market_identity(
+            market_slug=market_slug, market_start_epoch=market_start_epoch
+        )
         return f"{token_id}|{horizon}|{direction.upper()}|{identity}"
 
     @staticmethod
@@ -473,7 +475,9 @@ class Trader:
             except Exception:
                 continue
 
-            positions = payload if isinstance(payload, list) else payload.get("positions") if isinstance(payload, dict) else []
+            positions = (
+                payload if isinstance(payload, list) else payload.get("positions") if isinstance(payload, dict) else []
+            )
             if not isinstance(positions, list):
                 continue
 
