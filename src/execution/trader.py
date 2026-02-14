@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import asyncio
 import math
+import re
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -17,6 +18,8 @@ from metrics import DAILY_REALIZED_PNL, RISK_LIMIT_BLOCKED, TRADES
 from utils.rounding import round_price_up_to_tick, round_size_to_step
 
 logger = structlog.get_logger(__name__)
+
+_MARKET_SLUG_PATTERN = re.compile(r"^btc-updown-(?P<horizon>\d+)m-(?P<start>\d+)$")
 
 try:
     from py_clob_client.client import ClobClient
@@ -167,10 +170,22 @@ class Trader:
             if not isinstance(key, str):
                 continue
             try:
-                normalized[key] = max(0.0, float(value))
+                amount = max(0.0, float(value))
             except (TypeError, ValueError):
                 continue
+            migrated_key = self._migrate_legacy_exposure_key(key)
+            normalized[migrated_key] = normalized.get(migrated_key, 0.0) + amount
         return normalized
+
+    @staticmethod
+    def _migrate_legacy_exposure_key(key: str) -> str:
+        parts = key.split("|")
+        if len(parts) >= 4:
+            return key
+        if len(parts) == 3:
+            token_id, horizon, direction = parts
+            return f"{token_id}|{horizon}|{direction}|legacy"
+        return key
 
     def _migrate_open_exposure_payload(self, raw: Any) -> dict[str, float]:
         migrated: dict[str, float] = {}
@@ -184,7 +199,7 @@ class Trader:
                 if not isinstance(horizon, str) or not isinstance(by_direction, dict):
                     continue
                 for direction, notional in by_direction.items():
-                    key = self._market_exposure_key(token_id, horizon, str(direction))
+                    key = self._market_exposure_key(token_id, horizon, str(direction), market_identity="legacy")
                     try:
                         migrated[key] = max(0.0, float(notional))
                     except (TypeError, ValueError):
@@ -213,17 +228,104 @@ class Trader:
         logger.info("risk_daily_pnl_reset", reset_date_utc=today_utc)
 
     @staticmethod
-    def _market_exposure_key(token_id: str, horizon: str, direction: str) -> str:
-        return f"{token_id}|{horizon}|{direction.upper()}"
+    def _market_identity(*, market_slug: str | None = None, market_start_epoch: int | None = None) -> str:
+        if market_slug:
+            return f"slug:{market_slug}"
+        if market_start_epoch is not None:
+            return f"start:{market_start_epoch}"
+        return "legacy"
 
-    def _risk_blocked(self, notional_usd: float, token_id: str, horizon: str, direction: str) -> bool:
+    @classmethod
+    def _market_exposure_key(
+        cls,
+        token_id: str,
+        horizon: str,
+        direction: str,
+        *,
+        market_slug: str | None = None,
+        market_start_epoch: int | None = None,
+        market_identity: str | None = None,
+    ) -> str:
+        identity = market_identity or cls._market_identity(market_slug=market_slug, market_start_epoch=market_start_epoch)
+        return f"{token_id}|{horizon}|{direction.upper()}|{identity}"
+
+    @staticmethod
+    def _parse_horizon_minutes(horizon: str) -> int | None:
+        text = str(horizon).strip().lower()
+        if text.endswith("m"):
+            text = text[:-1]
+        try:
+            parsed = int(text)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
+
+    @classmethod
+    def _infer_market_end_epoch(cls, horizon: str, market_identity: str) -> int | None:
+        if market_identity.startswith("slug:"):
+            market_identity = market_identity.split(":", 1)[1]
+
+        slug_match = _MARKET_SLUG_PATTERN.match(market_identity)
+        if slug_match:
+            horizon_minutes = int(slug_match.group("horizon"))
+            start_epoch = int(slug_match.group("start"))
+            return start_epoch + horizon_minutes * 60
+
+        if market_identity.startswith("start:"):
+            try:
+                start_epoch = int(market_identity.split(":", 1)[1])
+            except (TypeError, ValueError):
+                return None
+            horizon_minutes = cls._parse_horizon_minutes(horizon)
+            if horizon_minutes is None:
+                return None
+            return start_epoch + horizon_minutes * 60
+        return None
+
+    def _cleanup_expired_exposure(self, now_ts: int | None = None) -> bool:
+        if not self.risk.open_exposure_usd_by_market:
+            return False
+
+        now = now_ts if now_ts is not None else int(time.time())
+        removed = False
+        for key in list(self.risk.open_exposure_usd_by_market.keys()):
+            parts = key.split("|", 3)
+            if len(parts) != 4:
+                continue
+            _token_id, horizon, _direction, market_identity = parts
+            end_epoch = self._infer_market_end_epoch(horizon, market_identity)
+            if end_epoch is None or end_epoch > now:
+                continue
+            self.risk.open_exposure_usd_by_market.pop(key, None)
+            removed = True
+
+        if removed:
+            self.risk.total_open_notional_usd = max(0.0, sum(self.risk.open_exposure_usd_by_market.values()))
+        return removed
+
+    def _risk_blocked(
+        self,
+        notional_usd: float,
+        token_id: str,
+        horizon: str,
+        direction: str,
+        *,
+        market_slug: str | None = None,
+        market_start_epoch: int | None = None,
+    ) -> bool:
         if notional_usd > self.settings.max_usd_per_trade:
             return True
         if self.risk.daily_realized_pnl <= -abs(self.settings.max_daily_loss):
             return True
         if self.risk.trades_this_hour >= self.settings.max_trades_per_hour:
             return True
-        market_key = self._market_exposure_key(token_id, horizon, direction)
+        market_key = self._market_exposure_key(
+            token_id,
+            horizon,
+            direction,
+            market_slug=market_slug,
+            market_start_epoch=market_start_epoch,
+        )
         next_market_exposure = self.risk.open_exposure_usd_by_market.get(market_key, 0.0) + notional_usd
         if next_market_exposure > self.settings.max_open_exposure_per_market:
             return True
@@ -235,15 +337,35 @@ class Trader:
         DAILY_REALIZED_PNL.set(self.risk.daily_realized_pnl)
         RISK_LIMIT_BLOCKED.set(1 if risk_blocked else 0)
 
-    def _check_risk(self, notional_usd: float, token_id: str, horizon: str, direction: str) -> bool:
+    def _check_risk(
+        self,
+        notional_usd: float,
+        token_id: str,
+        horizon: str,
+        direction: str,
+        *,
+        market_slug: str | None = None,
+        market_start_epoch: int | None = None,
+    ) -> bool:
         self._reset_daily_pnl_if_needed()
+        cleaned = self._cleanup_expired_exposure()
         now_hour = datetime.now(timezone.utc).hour
         if now_hour != self.risk.last_trade_hour:
             self.risk.last_trade_hour = now_hour
             self.risk.trades_this_hour = 0
             self._persist_risk_state()
 
-        blocked = self._risk_blocked(notional_usd, token_id=token_id, horizon=horizon, direction=direction)
+        if cleaned:
+            self._persist_risk_state()
+
+        blocked = self._risk_blocked(
+            notional_usd,
+            token_id=token_id,
+            horizon=horizon,
+            direction=direction,
+            market_slug=market_slug,
+            market_start_epoch=market_start_epoch,
+        )
         self._update_risk_metrics(risk_blocked=blocked)
         return not blocked
 
@@ -307,10 +429,25 @@ class Trader:
 
         return notional, complete
 
-    def _apply_open_exposure_delta(self, token_id: str, horizon: str, direction: str, delta_usd: float) -> None:
+    def _apply_open_exposure_delta(
+        self,
+        token_id: str,
+        horizon: str,
+        direction: str,
+        delta_usd: float,
+        *,
+        market_slug: str | None = None,
+        market_start_epoch: int | None = None,
+    ) -> None:
         if delta_usd == 0:
             return
-        key = self._market_exposure_key(token_id, horizon, direction)
+        key = self._market_exposure_key(
+            token_id,
+            horizon,
+            direction,
+            market_slug=market_slug,
+            market_start_epoch=market_start_epoch,
+        )
         current = self.risk.open_exposure_usd_by_market.get(key, 0.0)
         updated = max(0.0, current + delta_usd)
         if updated == 0.0:
@@ -361,10 +498,27 @@ class Trader:
                     )
                 except (TypeError, ValueError):
                     continue
-                rebuilt[self._market_exposure_key(token_id, horizon, direction)] = notional
+                market_slug = str(position.get("market_slug") or position.get("slug") or "").strip() or None
+                market_start_epoch_raw = position.get("start_epoch") or position.get("startEpoch")
+                market_start_epoch = None
+                if market_start_epoch_raw is not None:
+                    try:
+                        market_start_epoch = int(market_start_epoch_raw)
+                    except (TypeError, ValueError):
+                        market_start_epoch = None
+                rebuilt[
+                    self._market_exposure_key(
+                        token_id,
+                        horizon,
+                        direction,
+                        market_slug=market_slug,
+                        market_start_epoch=market_start_epoch,
+                    )
+                ] = notional
 
             self.risk.open_exposure_usd_by_market = rebuilt
             self.risk.total_open_notional_usd = sum(rebuilt.values())
+            self._cleanup_expired_exposure()
             self.risk.trades_since_reconcile = 0
             return
 
@@ -376,6 +530,8 @@ class Trader:
         horizon: str,
         direction: str,
         fallback_notional_usd: float,
+        market_slug: str | None = None,
+        market_start_epoch: int | None = None,
     ) -> None:
         self._reset_daily_pnl_if_needed()
         realized_pnl = self._extract_realized_pnl(resp)
@@ -384,11 +540,28 @@ class Trader:
 
         filled_notional, complete_fill_details = self._extract_fill_notional(resp)
         applied_notional = filled_notional if filled_notional > 0 else fallback_notional_usd
-        self._apply_open_exposure_delta(token_id, horizon, direction, applied_notional)
+        self._apply_open_exposure_delta(
+            token_id,
+            horizon,
+            direction,
+            applied_notional,
+            market_slug=market_slug,
+            market_start_epoch=market_start_epoch,
+        )
         self._maybe_reconcile_exposure_from_exchange(force=not complete_fill_details)
+        self._cleanup_expired_exposure()
 
         self._persist_risk_state()
-        self._update_risk_metrics(risk_blocked=self._risk_blocked(0.0, token_id=token_id, horizon=horizon, direction=direction))
+        self._update_risk_metrics(
+            risk_blocked=self._risk_blocked(
+                0.0,
+                token_id=token_id,
+                horizon=horizon,
+                direction=direction,
+                market_slug=market_slug,
+                market_start_epoch=market_start_epoch,
+            )
+        )
 
     @staticmethod
     def _classify_submit_exception(exc: Exception) -> str:
@@ -472,7 +645,15 @@ class Trader:
 
         raise RuntimeError("unsupported_order_submission_api")
 
-    async def buy_fok(self, token_id: str, ask: float, horizon: str) -> bool:
+    async def buy_fok(
+        self,
+        token_id: str,
+        ask: float,
+        horizon: str,
+        *,
+        market_slug: str | None = None,
+        market_start_epoch: int | None = None,
+    ) -> bool:
         constraints = self.token_constraints_by_id.get(token_id, TokenConstraints())
         tick_size = constraints.tick_size
         min_order_size = constraints.min_order_size
@@ -494,7 +675,14 @@ class Trader:
         if min_order_size is not None and size < min_order_size:
             adjusted_size = self._round_size_up_to_step(min_order_size, size_step)
             adjusted_notional = adjusted_size * px
-            if not self._check_risk(adjusted_notional, token_id=token_id, horizon=horizon, direction="BUY"):
+            if not self._check_risk(
+                adjusted_notional,
+                token_id=token_id,
+                horizon=horizon,
+                direction="BUY",
+                market_slug=market_slug,
+                market_start_epoch=market_start_epoch,
+            ):
                 logger.info(
                     "order_reject_min_order_size",
                     token_id=token_id,
@@ -518,7 +706,14 @@ class Trader:
             size = adjusted_size
 
         notional = size * px
-        if not self._check_risk(notional, token_id=token_id, horizon=horizon, direction="BUY"):
+        if not self._check_risk(
+            notional,
+            token_id=token_id,
+            horizon=horizon,
+            direction="BUY",
+            market_slug=market_slug,
+            market_start_epoch=market_start_epoch,
+        ):
             logger.info(
                 "risk_reject",
                 token_id=token_id,
@@ -528,7 +723,14 @@ class Trader:
                 max_daily_loss=self.settings.max_daily_loss,
                 trades_this_hour=self.risk.trades_this_hour,
                 open_exposure_market=self.risk.open_exposure_usd_by_market.get(
-                    self._market_exposure_key(token_id, horizon, "BUY"), 0.0
+                    self._market_exposure_key(
+                        token_id,
+                        horizon,
+                        "BUY",
+                        market_slug=market_slug,
+                        market_start_epoch=market_start_epoch,
+                    ),
+                    0.0,
                 ),
                 total_open_notional_usd=self.risk.total_open_notional_usd,
             )
@@ -544,6 +746,8 @@ class Trader:
                 horizon=horizon,
                 direction="BUY",
                 fallback_notional_usd=notional,
+                market_slug=market_slug,
+                market_start_epoch=market_start_epoch,
             )
             TRADES.labels(status="dry_run", side="buy", horizon=horizon).inc()
             return True
@@ -600,6 +804,8 @@ class Trader:
                 horizon=horizon,
                 direction="BUY",
                 fallback_notional_usd=notional,
+                market_slug=market_slug,
+                market_start_epoch=market_start_epoch,
             )
             TRADES.labels(status="filled", side="buy", horizon=horizon).inc()
         else:
@@ -609,6 +815,13 @@ class Trader:
             ok=ok,
             response=resp,
             daily_realized_pnl=self.risk.daily_realized_pnl,
-            risk_limit_blocked=self._risk_blocked(0.0, token_id=token_id, horizon=horizon, direction="BUY"),
+            risk_limit_blocked=self._risk_blocked(
+                0.0,
+                token_id=token_id,
+                horizon=horizon,
+                direction="BUY",
+                market_slug=market_slug,
+                market_start_epoch=market_start_epoch,
+            ),
         )
         return ok

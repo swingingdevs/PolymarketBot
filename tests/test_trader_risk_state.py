@@ -90,3 +90,52 @@ def test_rejects_when_global_open_exposure_cap_exceeded(tmp_path):
     trader._apply_open_exposure_delta("t2", "15m", "BUY", 30.0)
 
     assert trader._check_risk(notional_usd=15.0, token_id="t3", horizon="30m", direction="BUY") is False
+
+
+def test_load_risk_state_migrates_legacy_exposure_keys(tmp_path):
+    state_path = tmp_path / "risk_state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "open_exposure_usd_by_market": {
+                    "token-a|5m|BUY": 10.0,
+                    "token-a|5m|BUY|slug:btc-updown-5m-1700000000": 2.5,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    trader = Trader(Settings(dry_run=True, risk_state_path=str(state_path)))
+
+    assert trader.risk.open_exposure_usd_by_market == {
+        "token-a|5m|BUY|legacy": 10.0,
+        "token-a|5m|BUY|slug:btc-updown-5m-1700000000": 2.5,
+    }
+
+
+def test_exposure_rollover_cleanup_removes_expired_market_entries(tmp_path):
+    state_path = tmp_path / "risk_state.json"
+    now = int(datetime.now(timezone.utc).timestamp())
+    expired_start = now - 600
+    active_start = now - 60
+    state_path.write_text(
+        json.dumps(
+            {
+                "open_exposure_usd_by_market": {
+                    f"token-expired|5m|BUY|start:{expired_start}": 10.0,
+                    f"token-active|15m|BUY|start:{active_start}": 20.0,
+                },
+                "total_open_notional_usd": 30.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    trader = Trader(Settings(dry_run=True, risk_state_path=str(state_path)))
+
+    allowed = trader._check_risk(5.0, token_id="token-new", horizon="5m", direction="BUY")
+
+    assert allowed is True
+    assert trader.risk.open_exposure_usd_by_market == {f"token-active|15m|BUY|start:{active_start}": 20.0}
+    assert trader.risk.total_open_notional_usd == 20.0
