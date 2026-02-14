@@ -83,10 +83,20 @@ class OrderBuilder:
         price: float,
         size: float,
         side: str = "BUY",
-        time_in_force: str = "FOK",
+        time_in_force: str | None = None,
+        post_only: bool = False,
+        fok: bool = True,
     ) -> tuple[Any, bool, float]:
+        if time_in_force is None:
+            time_in_force = "FOK" if fok else "GTC"
+        normalized_tif = str(time_in_force).strip().upper()
+        if not normalized_tif:
+            raise ValueError("time_in_force_required")
+        if fok and normalized_tif != "FOK":
+            raise ValueError("fok_conflicts_with_time_in_force")
+
         fee_rate_bps, used_fallback = self.resolve_fee_rate_bps(token_id)
-        payload = {
+        base_payload = {
             "price": price,
             "size": size,
             "side": side,
