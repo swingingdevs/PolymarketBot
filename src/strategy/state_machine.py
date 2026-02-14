@@ -29,6 +29,8 @@ class Candidate:
     slippage_cost: float
     ev_exec: float
     d: float
+    fee_rate_bps: float
+    order_size: float
 
 
 @dataclass(slots=True)
@@ -101,6 +103,8 @@ class StrategyStateMachine:
         rolling_window_seconds: int = 60,
         watch_zscore_threshold: float = 0.0,
         watch_mode_expiry_seconds: int = 60,
+        enable_fee_rate: bool = True,
+        default_fee_rate_bps: float | None = None,
     ) -> None:
         self.threshold = threshold
         self.hammer_secs = hammer_secs
@@ -117,6 +121,8 @@ class StrategyStateMachine:
         self.rolling_window_seconds = max(2, rolling_window_seconds)
         self.watch_zscore_threshold = watch_zscore_threshold
         self.watch_mode_expiry_seconds = max(1, watch_mode_expiry_seconds)
+        self.enable_fee_rate = enable_fee_rate
+        self.default_fee_rate_bps = fee_bps if default_fee_rate_bps is None else max(0.0, float(default_fee_rate_bps))
 
         self.last_price: float | None = None
         self.curr_minute_start: int | None = None
@@ -316,6 +322,9 @@ class StrategyStateMachine:
         if enabled:
             WATCH_TRIGGERED.inc()
 
+    def disable_watch_mode(self, ts: int) -> None:
+        self._set_watch_mode(False, ts)
+
     def in_hammer_window(self, now_ts: int, end_epoch: int) -> bool:
         return 0 <= (end_epoch - now_ts) <= self.hammer_secs
 
@@ -400,19 +409,16 @@ class StrategyStateMachine:
             p_hat = self.probability_calibrator.calibrate(raw_p_hat)
 
         fee_bps: float | None = None
-        if token_id and self.token_metadata_cache is not None:
+        if self.enable_fee_rate and token_id and self.token_metadata_cache is not None:
             metadata = self.token_metadata_cache.get(token_id, allow_stale=True)
             if metadata and metadata.fee_rate_bps is not None and metadata.fee_rate_bps >= 0:
                 fee_bps = metadata.fee_rate_bps
-        if fee_bps is None and token_id:
+        if fee_bps is None and self.enable_fee_rate and token_id:
             market_metadata = market.token_metadata_by_id.get(token_id)
             if market_metadata and market_metadata.fee_rate_bps is not None and market_metadata.fee_rate_bps >= 0:
                 fee_bps = market_metadata.fee_rate_bps
-
         if fee_bps is None:
-            fee_cost = self.fee_bps / 10000.0
-        else:
-            fee_cost = self._buy_fee_cost_per_share(ask=ask, fee_rate_bps=fee_bps)
+            fee_bps = self.default_fee_rate_bps if self.enable_fee_rate else self.fee_bps
 
         required_shares = expected_size if expected_size is not None else (self.expected_notional_usd / ask)
         required_shares = max(0.0, required_shares)
@@ -427,8 +433,11 @@ class StrategyStateMachine:
         effective_fill_prob = 1.0 if fill_prob is None else min(1.0, max(0.0, fill_prob))
         if not can_fill:
             effective_fill_prob = 0.0
-        ev_exec = p_hat - ask - fee_cost - slippage_cost
-        ev = ev_exec * effective_fill_prob
+        order_size = required_shares * ask
+        ev_before_fees = (p_hat - ask - slippage_cost) * effective_fill_prob
+        fee_cost = (fee_bps / 10_000.0) * order_size
+        ev = ev_before_fees - fee_cost
+        ev_exec = (p_hat - ask - slippage_cost) - ((fee_bps / 10_000.0) * ask)
         return Candidate(
             market=market,
             direction=direction,
@@ -441,6 +450,8 @@ class StrategyStateMachine:
             slippage_cost=slippage_cost,
             ev_exec=ev_exec,
             d=d,
+            fee_rate_bps=fee_bps,
+            order_size=order_size,
         )
 
     def pick_best(
