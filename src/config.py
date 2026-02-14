@@ -57,6 +57,7 @@ class Settings(BaseSettings):
     use_fallback_feed: bool = True
 
     watch_return_threshold: float = 0.005
+    settings_profile: str = "paper"
     watch_rolling_window_seconds: int = 60
     watch_zscore_threshold: float = 0.0
     watch_mode_expiry_seconds: int = 60
@@ -99,6 +100,7 @@ class Settings(BaseSettings):
         if profile not in PROFILE_DEFAULTS:
             allowed = ", ".join(sorted(PROFILE_DEFAULTS.keys()))
             raise ValueError(f"Unknown settings_profile={self.settings_profile}. Allowed: {allowed}")
+        self.settings_profile = profile
 
         defaults = PROFILE_DEFAULTS[profile]
         if "watch_return_threshold" not in self.model_fields_set:
