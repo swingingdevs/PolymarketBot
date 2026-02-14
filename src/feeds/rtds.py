@@ -24,6 +24,7 @@ class RTDSFeed:
         pong_timeout: int = 10,
         reconnect_delay_min: int = 1,
         reconnect_delay_max: int = 60,
+        reconnect_stability_duration: float = 5.0,
         price_staleness_threshold: int = 10,
         log_price_comparison: bool = True,
     ) -> None:
@@ -34,6 +35,7 @@ class RTDSFeed:
         self.pong_timeout = pong_timeout
         self.reconnect_delay_min = reconnect_delay_min
         self.reconnect_delay_max = reconnect_delay_max
+        self.reconnect_stability_duration = reconnect_stability_duration
         self.price_staleness_threshold = price_staleness_threshold
         self.log_price_comparison = log_price_comparison
 
@@ -59,10 +61,11 @@ class RTDSFeed:
         normalized_symbol = self.symbol.lower()
 
         backoff = self.reconnect_delay_min
-        stable_since: float | None = None
 
         while True:
             failed_pings = [0]
+            stable_since: float | None = None
+            stability_met = False
             try:
                 async with websockets.connect(self.ws_url, ping_interval=None, ping_timeout=None) as ws:
                     sub = {
@@ -82,6 +85,14 @@ class RTDSFeed:
 
                     try:
                         async for message in ws:
+                            if (
+                                not stability_met
+                                and stable_since is not None
+                                and (time.time() - stable_since) >= self.reconnect_stability_duration
+                            ):
+                                backoff = self.reconnect_delay_min
+                                stability_met = True
+
                             data = json.loads(message)
                             payload = data.get("payload", {})
                             payload_symbol = str(payload.get("symbol", "")).lower()
@@ -103,6 +114,10 @@ class RTDSFeed:
 
                             if topic != self.topic:
                                 continue
+
+                            if not stability_met:
+                                backoff = self.reconnect_delay_min
+                                stability_met = True
 
                             metadata: dict[str, object] = {
                                 "source": "chainlink_rtds",
