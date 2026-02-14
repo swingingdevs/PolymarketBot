@@ -821,7 +821,7 @@ class Trader:
         if self.client is None:
             raise RuntimeError("missing_clob_client")
 
-        if hasattr(self.client, "create_limit_order") and hasattr(self.client, "post_order"):
+        if hasattr(self.client, "create_order") and hasattr(self.client, "post_order"):
             self.order_builder.clob_client = self.client
             limit_order, used_fallback, fee_rate_bps = self.order_builder.build_signed_order(
                 token_id=token_id,
@@ -833,10 +833,7 @@ class Trader:
             if used_fallback and bool(getattr(self.settings, "enable_fee_rate", True)):
                 raise RuntimeError("fee_rate_unavailable_monitor_only")
             logger.info("order_fee_rate", token_id=token_id, fee_rate_bps=fee_rate_bps)
-            try:
-                return self.client.post_order(limit_order, time_in_force="FOK")
-            except TypeError:
-                return self.client.post_order(limit_order)
+            return self.client.post_order(limit_order, orderType="FOK")
 
         raise RuntimeError("unsupported_order_submission_api")
 

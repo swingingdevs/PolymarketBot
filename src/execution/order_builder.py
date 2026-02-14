@@ -9,6 +9,7 @@ from urllib.parse import urlencode
 from urllib.request import urlopen
 
 import structlog
+from py_clob_client.clob_types import OrderArgs
 
 from metrics import BOT_FEE_FETCH_FAILURES_TOTAL, BOT_FEE_RATE_BPS
 
@@ -90,16 +91,12 @@ class OrderBuilder:
             "size": size,
             "side": side,
             "token_id": token_id,
-            "time_in_force": time_in_force,
-            "feeRateBps": int(round(fee_rate_bps)),
+            "fee_rate_bps": int(round(fee_rate_bps)),
         }
+        del time_in_force
 
-        if hasattr(self.clob_client, "create_limit_order"):
-            try:
-                order = self.clob_client.create_limit_order(**payload)
-            except TypeError:
-                payload["fee_rate_bps"] = payload.pop("feeRateBps")
-                order = self.clob_client.create_limit_order(**payload)
+        if hasattr(self.clob_client, "create_order"):
+            order = self.clob_client.create_order(OrderArgs(**payload))
         else:
             raise RuntimeError("unsupported_order_submission_api")
 
