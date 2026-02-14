@@ -118,6 +118,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("max_daily_loss_pct", "MAX_DAILY_LOSS_PCT"),
     )
     max_trades_per_hour: int = 4
+    min_trade_interval_seconds: int = 300
     max_open_exposure_per_market_usd: float = Field(
         default=100.0,
         validation_alias=AliasChoices(
@@ -233,6 +234,8 @@ class Settings(BaseSettings):
             raise ValueError("Unsafe configuration: rtds_recovery_stabilization_seconds must be > 0")
         if self.rtds_recovery_min_fresh_updates <= 0:
             raise ValueError("Unsafe configuration: rtds_recovery_min_fresh_updates must be > 0")
+        if self.min_trade_interval_seconds < 0:
+            raise ValueError("Unsafe configuration: min_trade_interval_seconds must be >= 0")
 
         return self
 
