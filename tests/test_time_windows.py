@@ -1,3 +1,5 @@
+import pytest
+
 from strategy.state_machine import StrategyStateMachine
 
 
@@ -118,3 +120,26 @@ def test_start_price_updates_on_first_tick_after_15m_boundary() -> None:
         "timestamp": 901.4,
         "source": "chainlink_rtds",
     }
+
+
+def test_on_price_uses_configured_price_stale_after_seconds(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen_thresholds: list[float] = []
+
+    def fake_is_price_stale(timestamp: float, stale_after_seconds: float = 2.0) -> bool:
+        seen_thresholds.append(stale_after_seconds)
+        return False
+
+    monkeypatch.setattr("strategy.state_machine.is_price_stale", fake_is_price_stale)
+
+    sm = StrategyStateMachine(
+        0.005,
+        hammer_secs=15,
+        d_min=5,
+        max_entry_price=0.97,
+        fee_bps=10,
+        price_stale_after_seconds=7.5,
+    )
+
+    sm.on_price(100.0, 50000.0, metadata={"source": "chainlink_rtds", "timestamp": 100.0})
+
+    assert seen_thresholds == [7.5]

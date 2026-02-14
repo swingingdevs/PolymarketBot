@@ -199,6 +199,7 @@ async def orchestrate() -> None:
         token_metadata_cache=token_metadata_cache,
         rolling_window_seconds=settings.watch_rolling_window_seconds,
         watch_zscore_threshold=settings.watch_zscore_threshold,
+        price_stale_after_seconds=settings.price_stale_after_seconds,
         watch_mode_expiry_seconds=settings.watch_mode_expiry_seconds,
     )
 
