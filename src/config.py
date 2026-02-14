@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field, HttpUrl, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -47,6 +49,9 @@ class Settings(BaseSettings):
     rtds_topic: str = "crypto_prices_chainlink"
     log_price_comparison: bool = True
 
+    divergence_threshold_pct: float = 0.5
+    divergence_sustain_seconds: float = 5.0
+
     rtds_ping_interval: int = 30
     rtds_pong_timeout: int = 10
     rtds_reconnect_delay_min: int = 1
@@ -55,10 +60,9 @@ class Settings(BaseSettings):
     clob_book_staleness_threshold: int = 10
     chainlink_direct_api_url: str = "https://api.chain.link/streams/btc-usd"
     use_fallback_feed: bool = True
-    settings_profile: str = "live"
 
+    settings_profile: Literal["paper", "live", "high_vol", "low_vol"] = "paper"
     watch_return_threshold: float = 0.005
-    settings_profile: str = "paper"
     watch_rolling_window_seconds: int = 60
     watch_zscore_threshold: float = 0.0
     watch_mode_expiry_seconds: int = 60
@@ -96,7 +100,6 @@ class Settings(BaseSettings):
     metrics_host: str = "0.0.0.0"
     metrics_port: int = 9102
     token_metadata_ttl_seconds: float = 300.0
-    settings_profile: str = "paper"
 
     @model_validator(mode="after")
     def apply_profile_defaults(self) -> "Settings":
@@ -130,5 +133,9 @@ class Settings(BaseSettings):
             raise ValueError("Unsafe configuration: watch_return_threshold must be > 0")
         if self.d_min <= 0:
             raise ValueError("Unsafe configuration: d_min must be > 0")
+        if self.divergence_threshold_pct <= 0:
+            raise ValueError("Unsafe configuration: divergence_threshold_pct must be > 0")
+        if self.divergence_sustain_seconds <= 0:
+            raise ValueError("Unsafe configuration: divergence_sustain_seconds must be > 0")
 
         return self

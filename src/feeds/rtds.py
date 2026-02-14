@@ -122,15 +122,20 @@ class RTDSFeed:
                                 "timestamp": price_ts,
                             }
 
+                            binance_price = self._extract_binance_price(payload)
+                            divergence_pct: float | None = None
+                            if binance_price is not None:
+                                divergence_pct = compare_feeds(chainlink_price, binance_price)
+                                metadata["binance_price"] = binance_price
+                                metadata["divergence_pct"] = divergence_pct
+
                             if self.log_price_comparison and self._comparison_count < 100:
-                                binance_price = self._extract_binance_price(payload)
-                                if binance_price is not None:
-                                    compare_feeds(chainlink_price, binance_price)
                                 logger.info(
                                     "price_comparison_sample",
                                     sample_index=self._comparison_count + 1,
                                     chainlink_price=chainlink_price,
                                     binance_price=binance_price,
+                                    divergence_pct=divergence_pct,
                                 )
                                 self._comparison_count += 1
 

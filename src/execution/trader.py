@@ -14,7 +14,7 @@ import structlog
 from config import Settings
 from markets.token_metadata_cache import TokenMetadataCache
 from metrics import DAILY_REALIZED_PNL, RISK_LIMIT_BLOCKED, TRADES
-from utils.rounding import round_price_to_tick, round_size_to_step
+from utils.rounding import round_price_up_to_tick, round_size_to_step
 
 logger = structlog.get_logger(__name__)
 
@@ -391,18 +391,6 @@ class Trader:
         self._update_risk_metrics(risk_blocked=self._risk_blocked(0.0, token_id=token_id, horizon=horizon, direction=direction))
 
     @staticmethod
-    def _normalize_buy_fok_price(ask: float, tick_size: float) -> float:
-        if tick_size <= 0:
-            raise ValueError("tick_size must be > 0")
-
-        tick_ratio = ask / tick_size
-        nearest_tick = round(tick_ratio)
-        if math.isclose(tick_ratio, nearest_tick, rel_tol=0.0, abs_tol=1e-9):
-            return ask
-
-        return round(math.ceil(tick_ratio) * tick_size, 8)
-
-    @staticmethod
     def _classify_submit_exception(exc: Exception) -> str:
         text = str(exc).lower()
         name = exc.__class__.__name__.lower()
@@ -486,14 +474,16 @@ class Trader:
 
     async def buy_fok(self, token_id: str, ask: float, horizon: str) -> bool:
         constraints = self.token_constraints_by_id.get(token_id, TokenConstraints())
+        tick_size = constraints.tick_size or 0.001
+        size_step = constraints.min_order_size or 0.1
+        min_order_size = constraints.min_order_size
 
         size = self.settings.quote_size_usd / ask
-        size = round_size_to_step(size, 0.1)
-        px = round_price_to_tick(ask, constraints.tick_size or 0.001)
+        size = round_size_to_step(size, size_step)
+        px = round_price_up_to_tick(ask, tick_size)
 
-        min_order_size = constraints.min_order_size
         if min_order_size is not None and size < min_order_size:
-            adjusted_size = self._round_size_up_to_step(min_order_size, 0.1)
+            adjusted_size = self._round_size_up_to_step(min_order_size, size_step)
             adjusted_notional = adjusted_size * px
             if not self._check_risk(adjusted_notional, token_id=token_id, horizon=horizon, direction="BUY"):
                 logger.info(
@@ -517,7 +507,6 @@ class Trader:
                 min_order_size=min_order_size,
             )
             size = adjusted_size
-        px = self._normalize_buy_fok_price(ask, 0.001)
 
         notional = size * px
         if not self._check_risk(notional, token_id=token_id, horizon=horizon, direction="BUY"):

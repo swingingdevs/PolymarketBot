@@ -8,7 +8,7 @@ import structlog
 
 from markets.gamma_cache import UpDownMarket
 from markets.token_metadata_cache import TokenMetadataCache
-from metrics import CURRENT_EV, WATCH_EVENTS
+from metrics import CURRENT_EV, REJECTED_MAX_ENTRY_PRICE, STALE_FEED, WATCH_EVENTS, WATCH_TRIGGERED
 from strategy.calibration import CalibrationInput, IdentityCalibrator, ProbabilityCalibrator
 from utils.price_validation import is_price_stale, validate_price_source
 
@@ -149,6 +149,7 @@ class StrategyStateMachine:
             return
         if is_price_stale(float(metadata.get("timestamp", ts)), stale_after_seconds=2.0):
             logger.warning("stale_price_update", timestamp=metadata.get("timestamp", ts))
+            STALE_FEED.inc()
 
         sec = int(ts)
         self.prices_1s.append((sec, price))
@@ -224,6 +225,8 @@ class StrategyStateMachine:
         self.watch_mode = enabled
         self.watch_mode_started_at = ts if enabled else None
         WATCH_EVENTS.inc()
+        if enabled:
+            WATCH_TRIGGERED.inc()
 
     def in_hammer_window(self, now_ts: int, end_epoch: int) -> bool:
         return 0 <= (end_epoch - now_ts) <= self.hammer_secs
@@ -267,7 +270,10 @@ class StrategyStateMachine:
             return None
 
         d = abs(curr - start)
-        if d <= self.d_min or ask > self.max_entry_price:
+        if ask > self.max_entry_price:
+            REJECTED_MAX_ENTRY_PRICE.inc()
+            return None
+        if d <= self.d_min:
             return None
 
         sigma1 = self._sigma1()

@@ -138,3 +138,21 @@ Startup is rejected for unsafe parameter combos, including:
 
 - Keep `DRY_RUN=true` until all connectivity and pricing checks are validated.
 - For live orders, set credentials and ensure py-clob-client account setup is complete.
+
+## Runtime smoke script (paper mode)
+
+Use the smoke runner to verify end-to-end runtime wiring (Gamma + RTDS + CLOB + strategy + paper trader):
+
+```bash
+python scripts/smoke_runtime.py
+```
+
+Quick operator verification markers:
+- `[SMOKE] SETTINGS_PROFILE=paper DRY_RUN=True`
+- `[SMOKE] RESOLVED_MARKETS` followed by `[SMOKE] MARKET ...`
+- `[SMOKE] BOOK_SNAPSHOT` and repeated `[SMOKE] SNAPSHOT ... bid=... ask=...`
+- `[SMOKE] CANDIDATE ... ev=...` (strategy EV details printed at least once)
+- `[SMOKE] PAPER_ORDER ... result=True|False` (paper `Trader.buy_fok` path)
+- `[SMOKE] SUMMARY rtds_events=... clob_events=... candidate_found=... order_result=...`
+
+The script targets ~120 seconds runtime max and exits with a concise summary for go/no-go checks.
