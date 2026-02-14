@@ -19,6 +19,7 @@ class QuorumDecision:
     chainlink_stale: bool
     spot_quorum_divergence_pct: float | None
     feed_lag_seconds: dict[str, float]
+    divergence_data_available: bool
 
 
 class QuorumHealth:
@@ -54,7 +55,7 @@ class QuorumHealth:
 
         if self.chainlink_sample is None:
             reasons.append("CHAINLINK_MISSING")
-            return QuorumDecision(False, reasons, True, None, lag_seconds)
+            return QuorumDecision(False, reasons, True, None, lag_seconds, False)
 
         chainlink_lag = max(0.0, current - self.chainlink_sample.payload_ts)
         lag_seconds["chainlink"] = chainlink_lag
@@ -71,8 +72,8 @@ class QuorumHealth:
 
         if len(fresh_spot_prices) < self.min_spot_sources:
             reasons.append("SPOT_QUORUM_UNAVAILABLE")
-            self._divergence_started_at = None
-            return QuorumDecision(False, reasons, chainlink_stale, None, lag_seconds)
+            reasons.append("DIVERGENCE_DATA_MISSING")
+            return QuorumDecision(False, reasons, chainlink_stale, None, lag_seconds, False)
 
         spot_median = float(median(fresh_spot_prices))
         divergence_pct = abs((self.chainlink_sample.price - spot_median) / self.chainlink_sample.price) * 100.0
@@ -86,4 +87,4 @@ class QuorumHealth:
             self._divergence_started_at = None
 
         trading_allowed = len(reasons) == 0
-        return QuorumDecision(trading_allowed, reasons, chainlink_stale, divergence_pct, lag_seconds)
+        return QuorumDecision(trading_allowed, reasons, chainlink_stale, divergence_pct, lag_seconds, True)
