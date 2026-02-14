@@ -51,23 +51,34 @@ def _connect_factory(ws: _FakeWebSocket):
     return _connect
 
 
-def test_rtds_subscribe_envelope_and_symbol_case_normalization(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_rtds_subscribe_both_topics_and_timestamp_normalization(monkeypatch: pytest.MonkeyPatch) -> None:
     ws = _FakeWebSocket(
         [
             json.dumps(
                 {
+                    "topic": "crypto_prices",
+                    "payload": {
+                        "symbol": "btc/usd",
+                        "value": "43120.5",
+                        "timestamp": 1712345678901,
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "topic": "crypto_prices_chainlink",
                     "payload": {
                         "symbol": "btc/usd",
                         "value": "43123.5",
-                        "timestamp_ms": 1712345678901,
-                    }
+                        "timestamp": 1712345679901,
+                    },
                 }
-            )
+            ),
         ]
     )
     monkeypatch.setattr("feeds.rtds.websockets.connect", _connect_factory(ws))
 
-    feed = RTDSFeed("wss://unused", symbol="BTC/USD", log_price_comparison=False)
+    feed = RTDSFeed("wss://unused", symbol="btc/usd", log_price_comparison=False)
 
     async def _run():
         stream = feed.stream_prices()
@@ -77,39 +88,43 @@ def test_rtds_subscribe_envelope_and_symbol_case_normalization(monkeypatch: pyte
 
     ts, price, metadata = asyncio.run(_run())
 
-    assert ts == 1712345678.901
+    assert ts == 1712345679.901
     assert price == 43123.5
-    assert metadata["timestamp"] == 1712345678.901
-    assert metadata["timestamp_ms"] == 1712345678901.0
-    assert metadata["timestamp_s"] == 1712345678.901
+    assert metadata["timestamp"] == 1712345679.901
+    assert metadata["spot_price"] == 43120.5
+    assert metadata["divergence_pct"] > 0
 
     assert len(ws.sent_payloads) == 1
     subscribe = json.loads(ws.sent_payloads[0])
     assert subscribe["action"] == "subscribe"
-    assert subscribe["subscriptions"][0]["topic"] == "crypto_prices_chainlink"
-    assert subscribe["subscriptions"][0]["type"] == "market"
-    assert json.loads(subscribe["subscriptions"][0]["filters"]) == {"symbol": "BTC/USD"}
+    topics = [item["topic"] for item in subscribe["subscriptions"]]
+    assert topics == ["crypto_prices_chainlink", "crypto_prices"]
+    for sub in subscribe["subscriptions"]:
+        assert sub["type"] == "market"
+        assert json.loads(sub["filters"]) == {"symbol": "btc/usd"}
 
 
-def test_rtds_staleness_uses_second_based_timestamps(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_rtds_staleness_uses_normalized_timestamps(monkeypatch: pytest.MonkeyPatch) -> None:
     ws = _FakeWebSocket(
         [
             json.dumps(
                 {
+                    "topic": "crypto_prices_chainlink",
                     "payload": {
-                        "symbol": "BTC/USD",
+                        "symbol": "btc/usd",
                         "value": "50000",
-                        "timestamp_ms": 10_000,
-                    }
+                        "timestamp": 10.0,
+                    },
                 }
             ),
             json.dumps(
                 {
+                    "topic": "crypto_prices_chainlink",
                     "payload": {
                         "symbol": "btc/usd",
                         "value": "50001",
-                        "timestamp_ms": 12_000,
-                    }
+                        "timestamp": 12.0,
+                    },
                 }
             ),
         ]
@@ -119,12 +134,12 @@ def test_rtds_staleness_uses_second_based_timestamps(monkeypatch: pytest.MonkeyP
     warnings: list[dict[str, object]] = []
     monkeypatch.setattr("feeds.rtds.logger.warning", lambda event, **kwargs: warnings.append({"event": event, **kwargs}))
 
-    timeline = iter([11.0, 15.0])
+    timeline = iter([11.0, 17.0])
     monkeypatch.setattr("feeds.rtds.time.time", lambda: next(timeline, 15.0))
 
     feed = RTDSFeed(
         "wss://unused",
-        symbol="BTC/USD",
+        symbol="btc/usd",
         price_staleness_threshold=3,
         reconnect_delay_min=0,
         reconnect_delay_max=0,

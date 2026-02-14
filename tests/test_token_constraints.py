@@ -46,11 +46,13 @@ def test_clob_cache_updates_on_tick_size_change_event(monkeypatch) -> None:
         def __init__(self) -> None:
             self._messages = [
                 '{"event_type":"tick_size_change","asset_id":"token-a","tick_size":"0.01"}',
-                '{"event_type":"book","asset_id":"token-a","bids":[["0.20","1"]],"asks":[["0.21","1"]],"timestamp":123}',
+                '{"event_type":"book","asset_id":"token-a","bids":[{"price":"0.20","size":"1"}],"asks":[{"price":"0.21","size":"1"}],"timestamp":1712345678901}',
             ]
 
-        async def send(self, _payload: str) -> None:
-            return
+        sent: list[str] = []
+
+        async def send(self, payload: str) -> None:
+            self.sent.append(payload)
 
         async def recv(self) -> str:
             if self._messages:
@@ -58,9 +60,11 @@ def test_clob_cache_updates_on_tick_size_change_event(monkeypatch) -> None:
             await asyncio.sleep(3600)
             return ""
 
+    ws = FakeWS()
+
     class FakeConnectCtx:
         async def __aenter__(self):
-            return FakeWS()
+            return ws
 
         async def __aexit__(self, exc_type, exc, tb):
             return False
@@ -76,9 +80,11 @@ def test_clob_cache_updates_on_tick_size_change_event(monkeypatch) -> None:
         stream = clob.stream_books(["token-a"])
         first = await stream.__anext__()
         assert first.token_id == "token-a"
+        assert first.ts == 1712345678.901
         return clob
 
     clob = asyncio.run(_run())
     constraints = clob.get_token_constraints("token-a")
     assert constraints is not None
     assert constraints.tick_size == 0.01
+    assert ws.sent[0] == "{\"assets_ids\": [\"token-a\"], \"type\": \"market\"}"

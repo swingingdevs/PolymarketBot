@@ -42,10 +42,10 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     rtds_ws_url: str = "wss://ws-live-data.polymarket.com"
-    clob_ws_url: str = "wss://ws-subscriptions-clob.polymarket.com/ws/"
+    clob_ws_url: str = "wss://ws-subscriptions-clob.polymarket.com"
     gamma_api_url: HttpUrl = "https://gamma-api.polymarket.com"
 
-    symbol: str = "BTC/USD"
+    symbol: str = "btc/usd"
     rtds_topic: str = "crypto_prices_chainlink"
     log_price_comparison: bool = True
 
@@ -58,8 +58,8 @@ class Settings(BaseSettings):
     rtds_reconnect_delay_max: int = 60
     price_staleness_threshold: int = 10
     clob_book_staleness_threshold: int = 10
-    chainlink_direct_api_url: str = "https://api.chain.link/streams/btc-usd"
-    use_fallback_feed: bool = True
+    chainlink_direct_api_url: str = "https://api.exchange.coinbase.com/products/BTC-USD/ticker"
+    use_fallback_feed: bool = False
 
     settings_profile: Literal["paper", "live", "high_vol", "low_vol"] = "paper"
     watch_return_threshold: float = 0.005

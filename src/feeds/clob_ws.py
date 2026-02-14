@@ -10,6 +10,8 @@ from typing import AsyncIterator
 import structlog
 import websockets
 
+from utils.time import normalize_ts
+
 logger = structlog.get_logger(__name__)
 
 
@@ -49,6 +51,8 @@ class CLOBWebSocket:
         self.reconnect_delay_max = reconnect_delay_max
         self.book_staleness_threshold = float(stale_after_seconds) if stale_after_seconds is not None else float(book_staleness_threshold)
         self.token_metadata_cache: dict[str, TokenConstraints] = {}
+        self._ws: websockets.WebSocketClientProtocol | None = None
+        self._subscribed_token_ids: set[str] = set()
 
     @staticmethod
     def _coerce_positive_float(value: object) -> float | None:
@@ -125,19 +129,50 @@ class CLOBWebSocket:
             )
             last_warning_at = time.time()
 
+
+    @staticmethod
+    def _extract_price_size(levels: object) -> tuple[float | None, float | None]:
+        if not isinstance(levels, list) or not levels:
+            return None, None
+        top = levels[0]
+        try:
+            if isinstance(top, dict):
+                return float(top.get("price")), float(top.get("size"))
+            if isinstance(top, list) and len(top) >= 2:
+                return float(top[0]), float(top[1])
+        except (TypeError, ValueError):
+            return None, None
+        return None, None
+
+    async def update_subscriptions(self, token_ids: list[str]) -> None:
+        if self._ws is None:
+            return
+
+        desired = set(token_ids)
+        added = sorted(desired - self._subscribed_token_ids)
+        removed = sorted(self._subscribed_token_ids - desired)
+
+        if removed:
+            await self._ws.send(json.dumps({"assets_ids": removed, "type": "market", "operation": "unsubscribe"}))
+        if added:
+            await self._ws.send(json.dumps({"assets_ids": added, "type": "market", "operation": "subscribe"}))
+
+        self._subscribed_token_ids = desired
+
     async def stream_books(self, token_ids: list[str]) -> AsyncIterator[BookTop]:
         backoff = self.reconnect_delay_min
-        channel = "book"
 
         while True:
             failed_pings = [0]
             try:
                 async with websockets.connect(self.ws_url, ping_interval=None, ping_timeout=None) as ws:
-                    sub = {"type": "market", "assets_ids": token_ids, "channel": channel}
+                    self._ws = ws
+                    self._subscribed_token_ids = set(token_ids)
+                    sub = {"assets_ids": token_ids, "type": "market"}
                     await ws.send(json.dumps(sub))
                     hb_task = asyncio.create_task(self._heartbeat(ws, failed_pings))
                     last_update = [time.time()]
-                    stale_task = asyncio.create_task(self._stale_watchdog(last_update, token_ids, channel))
+                    stale_task = asyncio.create_task(self._stale_watchdog(last_update, token_ids, "book"))
 
                     try:
                         while True:
@@ -153,14 +188,12 @@ class CLOBWebSocket:
                                 continue
                             bids = data.get("bids", [])
                             asks = data.get("asks", [])
-                            bid = float(bids[0][0]) if bids else None
-                            ask = float(asks[0][0]) if asks else None
-                            bid_size = float(bids[0][1]) if bids and len(bids[0]) > 1 else None
-                            ask_size = float(asks[0][1]) if asks and len(asks[0]) > 1 else None
+                            bid, bid_size = self._extract_price_size(bids)
+                            ask, ask_size = self._extract_price_size(asks)
                             fill_prob = data.get("fill_prob")
                             if fill_prob is not None:
                                 fill_prob = float(fill_prob)
-                            ts = float(data.get("timestamp", time.time()))
+                            ts = normalize_ts(data.get("timestamp", time.time()))
                             last_update[0] = time.time()
                             yield BookTop(
                                 token_id=token_id,
@@ -184,3 +217,6 @@ class CLOBWebSocket:
                 logger.warning("clob_reconnect", error=str(exc), delay_seconds=backoff)
                 await asyncio.sleep(backoff)
                 backoff = min(self.reconnect_delay_max, backoff * 2)
+            finally:
+                self._ws = None
+                self._subscribed_token_ids = set()
