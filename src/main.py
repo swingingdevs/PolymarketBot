@@ -139,6 +139,22 @@ async def stream_prices_with_fallback(
         fallback_task = asyncio.create_task(fallback_iter.__anext__())
 
 
+async def _cancel_and_wait(task: asyncio.Task[object] | None) -> None:
+    if task is None or task.done():
+        return
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+async def _wait_for_first_completed(*tasks: asyncio.Task[object]) -> asyncio.Task[object]:
+    done, pending = await asyncio.wait(set(tasks), return_when=asyncio.FIRST_COMPLETED)
+    finished = done.pop()
+    for task in pending:
+        await _cancel_and_wait(task)
+    return finished
+
+
 async def stream_clob_with_resubscribe(
     clob: CLOBWebSocket,
     get_token_ids: Callable[[], set[str]],
@@ -328,8 +344,6 @@ async def orchestrate() -> None:
         "last_divergence_pct": None,
     }
     KILL_SWITCH_ACTIVE.set(0)
-    fallback_task: asyncio.Task[None] | None = None
-
     async def consume_rtds() -> None:
         async for ts, px, metadata in rtds.stream_prices():
             feed_state["last_rtds_update"] = time.time()
@@ -344,32 +358,32 @@ async def orchestrate() -> None:
             await process_price(ts, px, metadata)
 
     async def monitor_rtds_staleness() -> None:
-        nonlocal fallback_task
+        fallback_task: asyncio.Task[None] | None = None
         check_interval = max(0.1, min(1.0, settings.price_staleness_threshold / 2))
-        while True:
-            await asyncio.sleep(check_interval)
-            age = time.time() - float(feed_state["last_rtds_update"])
-            stale = age > settings.price_staleness_threshold
+        try:
+            while True:
+                await asyncio.sleep(check_interval)
+                age = time.time() - float(feed_state["last_rtds_update"])
+                stale = age > settings.price_staleness_threshold
 
-            if stale and settings.use_fallback_feed:
-                if feed_state["mode"] != "fallback":
-                    feed_state["mode"] = "fallback"
-                    logger.warning("enter_fallback_chainlink_direct", staleness_seconds=age)
-                    STALE_FEED.inc()
-                    fallback_task = asyncio.create_task(consume_fallback())
-                else:
-                    logger.warning("still_degraded_using_fallback", staleness_seconds=age)
-                    STALE_FEED.inc()
-                continue
+                if stale and settings.use_fallback_feed:
+                    if feed_state["mode"] != "fallback":
+                        feed_state["mode"] = "fallback"
+                        logger.warning("enter_fallback_chainlink_direct", staleness_seconds=age)
+                        STALE_FEED.inc()
+                        fallback_task = asyncio.create_task(consume_fallback())
+                    else:
+                        logger.warning("still_degraded_using_fallback", staleness_seconds=age)
+                        STALE_FEED.inc()
+                    continue
 
-            if feed_state["mode"] == "fallback":
-                feed_state["mode"] = "rtds"
-                logger.info("recovered_rtds_freshness", staleness_seconds=age)
-                if fallback_task and not fallback_task.done():
-                    fallback_task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await fallback_task
-                fallback_task = None
+                if feed_state["mode"] == "fallback":
+                    feed_state["mode"] = "rtds"
+                    logger.info("recovered_rtds_freshness", staleness_seconds=age)
+                    await _cancel_and_wait(fallback_task)
+                    fallback_task = None
+        finally:
+            await _cancel_and_wait(fallback_task)
 
     async def consume_clob() -> None:
         nonlocal token_change_reason
@@ -391,15 +405,9 @@ async def orchestrate() -> None:
             while True:
                 next_book_task = asyncio.create_task(stream_iter.__anext__())
                 resubscribe_task = asyncio.create_task(clob_resubscribe_event.wait())
-                done, pending = await asyncio.wait(
-                    {next_book_task, resubscribe_task},
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
+                finished = await _wait_for_first_completed(next_book_task, resubscribe_task)
 
-                if next_book_task in done:
-                    resubscribe_task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await resubscribe_task
+                if finished is next_book_task:
                     top = next_book_task.result()
                     strategy.on_book(
                         top.token_id,
@@ -419,9 +427,6 @@ async def orchestrate() -> None:
                         )
                     continue
 
-                next_book_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await next_book_task
                 clob_resubscribe_event.clear()
                 await wait_for_token_set_to_stabilize()
                 subscribe_reason = token_change_reason
@@ -448,11 +453,10 @@ async def orchestrate() -> None:
                 await asyncio.sleep(backoff)
                 backoff = min(60.0, backoff * 2)
 
-    await asyncio.gather(
-        run_resilient("consume_rtds", consume_rtds),
-        run_resilient("consume_clob", consume_clob),
-        run_resilient("monitor_rtds_staleness", monitor_rtds_staleness),
-    )
+    async with asyncio.TaskGroup() as tg:
+        tg.create_task(run_resilient("consume_rtds", consume_rtds))
+        tg.create_task(run_resilient("consume_clob", consume_clob))
+        tg.create_task(run_resilient("monitor_rtds_staleness", monitor_rtds_staleness))
 
 
 if __name__ == "__main__":

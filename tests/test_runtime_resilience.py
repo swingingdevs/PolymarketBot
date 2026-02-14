@@ -12,7 +12,7 @@ from execution.trader import Trader
 from markets.token_metadata_cache import TokenMetadata, TokenMetadataCache
 from feeds import clob_ws
 from feeds.clob_ws import BookTop, CLOBWebSocket
-from main import stream_clob_with_resubscribe, stream_prices_with_fallback, update_divergence_kill_switch
+from main import _wait_for_first_completed, stream_clob_with_resubscribe, stream_prices_with_fallback, update_divergence_kill_switch
 
 
 class FakeFeed:
@@ -222,6 +222,59 @@ def test_market_epoch_roll_triggers_clob_resubscribe() -> None:
     assert first.token_id == "epoch-1-token"
     assert second.token_id == "epoch-2-token"
     assert clob.subscriptions == [["epoch-1-token"], ["epoch-2-token"]]
+
+
+def test_wait_for_first_completed_cancels_pending_task() -> None:
+    cancelled = asyncio.Event()
+
+    async def fast() -> str:
+        return "done"
+
+    async def slow() -> None:
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    async def _run() -> None:
+        fast_task = asyncio.create_task(fast())
+        slow_task = asyncio.create_task(slow())
+        winner = await _wait_for_first_completed(fast_task, slow_task)
+
+        assert winner is fast_task
+        assert winner.result() == "done"
+        assert slow_task.cancelled() is True
+        assert cancelled.is_set() is True
+
+    asyncio.run(_run())
+
+
+def test_wait_for_first_completed_propagates_crash_and_cancels_peer() -> None:
+    cancelled = asyncio.Event()
+
+    async def crash() -> None:
+        raise RuntimeError("boom")
+
+    async def slow() -> None:
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    async def _run() -> None:
+        crash_task = asyncio.create_task(crash())
+        slow_task = asyncio.create_task(slow())
+        winner = await _wait_for_first_completed(crash_task, slow_task)
+
+        assert winner is crash_task
+        with pytest.raises(RuntimeError, match="boom"):
+            winner.result()
+        assert slow_task.cancelled() is True
+        assert cancelled.is_set() is True
+
+    asyncio.run(_run())
 
 
 class _CaptureClient:
