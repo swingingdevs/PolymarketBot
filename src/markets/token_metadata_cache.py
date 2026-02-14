@@ -32,7 +32,14 @@ class TokenMetadataCache:
     def put_many(self, values: dict[str, TokenMetadata]) -> None:
         now = time.time()
         for token_id, metadata in values.items():
-            self._cache[token_id] = _CacheEntry(metadata=metadata, updated_at=now)
+            self._cache[token_id] = _CacheEntry(
+                metadata=TokenMetadata(
+                    tick_size=metadata.tick_size,
+                    min_order_size=metadata.min_order_size,
+                    fee_rate_bps=metadata.fee_rate_bps,
+                ),
+                updated_at=now,
+            )
 
     def _entry(self, token_id: str) -> tuple[_CacheEntry | None, bool]:
         entry = self._cache.get(token_id)
@@ -56,12 +63,12 @@ class TokenMetadataCache:
         logger.debug("token_tick_size_fallback", token_id=token_id, fallback_tick_size=fallback_tick_size)
         return fallback_tick_size
 
-    def get_min_order_size(self, token_id: str, fallback_min_order_size: float) -> float:
+    def get_min_order_size(self, token_id: str) -> float | None:
         metadata = self.get(token_id, allow_stale=True)
         if metadata and metadata.min_order_size is not None and metadata.min_order_size > 0:
             return metadata.min_order_size
-        logger.debug("token_min_order_size_fallback", token_id=token_id, fallback_min_order_size=fallback_min_order_size)
-        return fallback_min_order_size
+        logger.debug("token_min_order_size_missing", token_id=token_id)
+        return None
 
     def get_fee_rate_bps(self, token_id: str, fallback_fee_bps: float) -> float:
         metadata = self.get(token_id, allow_stale=True)
