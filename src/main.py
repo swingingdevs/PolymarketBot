@@ -157,6 +157,7 @@ async def orchestrate() -> None:
     token_change_reason = "initial_bootstrap"
     last_token_change_at = 0.0
     clob_resubscribe_debounce_seconds = 2.0
+    last_refresh_ts = 0
 
     async def wait_for_token_set_to_stabilize() -> None:
         nonlocal last_token_change_at
@@ -199,7 +200,8 @@ async def orchestrate() -> None:
             token_ids = new_token_ids
             clob_resubscribe_event.set()
 
-    await refresh_markets(int(time.time()))
+    last_refresh_ts = int(time.time())
+    await refresh_markets(last_refresh_ts)
     clob = CLOBWebSocket(
         settings.clob_ws_url,
         ping_interval=settings.rtds_ping_interval,
@@ -210,10 +212,12 @@ async def orchestrate() -> None:
     )
 
     async def process_price(ts: float, px: float, metadata: dict[str, object]) -> None:
+        nonlocal last_refresh_ts
         strategy.on_price(ts, px, metadata)
         now = int(ts)
-        if now % 60 == 0:
+        if (now // 60) != (last_refresh_ts // 60):
             await refresh_markets(now)
+            last_refresh_ts = now
 
         if not strategy.watch_mode:
             return
