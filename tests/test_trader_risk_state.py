@@ -63,7 +63,9 @@ def test_rejects_when_market_open_exposure_cap_exceeded(tmp_path):
         quote_size_usd=60.0,
         max_usd_per_trade=100.0,
         max_open_exposure_per_market=100.0,
+        max_open_exposure_per_market_pct=1.0,
         max_total_open_exposure=1_000.0,
+        max_total_open_exposure_pct=1.0,
         risk_state_path=str(tmp_path / "risk_state.json"),
     )
     trader = Trader(settings)
@@ -80,8 +82,10 @@ def test_rejects_when_global_open_exposure_cap_exceeded(tmp_path):
     settings = Settings(
         dry_run=True,
         max_open_exposure_per_market=500.0,
+        max_open_exposure_per_market_pct=1.0,
         max_usd_per_trade=100.0,
         max_total_open_exposure=100.0,
+        max_total_open_exposure_pct=1.0,
         risk_state_path=str(tmp_path / "risk_state.json"),
     )
     trader = Trader(settings)

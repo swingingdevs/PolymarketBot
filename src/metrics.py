@@ -44,7 +44,25 @@ CLOB_PRICE_CHANGE_PARSED = Counter(
 )
 CURRENT_EV = Gauge("bot_current_best_ev", "Best EV at decision point")
 DAILY_REALIZED_PNL = Gauge("bot_daily_realized_pnl_usd", "Daily realized PnL in USD")
-RISK_LIMIT_BLOCKED = Gauge("bot_risk_limit_blocked", "1 if trading is blocked by risk limits")
+RISK_LIMIT_BLOCKED = Counter("bot_risk_limit_blocked", "Number of risk-limit order blocks")
+MAX_DAILY_LOSS_USD_CONFIGURED = Gauge("bot_max_daily_loss_usd_configured", "Configured absolute max daily loss in USD")
+MAX_DAILY_LOSS_PCT_CONFIGURED = Gauge("bot_max_daily_loss_pct_configured", "Configured max daily loss as pct of equity")
+MAX_OPEN_EXPOSURE_PER_MARKET_USD_CONFIGURED = Gauge(
+    "bot_max_open_exposure_per_market_usd_configured",
+    "Configured max open exposure per market in USD",
+)
+MAX_OPEN_EXPOSURE_PER_MARKET_PCT_CONFIGURED = Gauge(
+    "bot_max_open_exposure_per_market_pct_configured",
+    "Configured max open exposure per market as pct of equity",
+)
+MAX_TOTAL_OPEN_EXPOSURE_USD_CONFIGURED = Gauge(
+    "bot_max_total_open_exposure_usd_configured",
+    "Configured max total open exposure in USD",
+)
+MAX_TOTAL_OPEN_EXPOSURE_PCT_CONFIGURED = Gauge(
+    "bot_max_total_open_exposure_pct_configured",
+    "Configured max total open exposure as pct of equity",
+)
 KILL_SWITCH_ACTIVE = Gauge("bot_kill_switch_active", "1 if divergence kill-switch is active")
 TRADING_ALLOWED = Gauge("bot_trading_allowed", "1 if trading is currently allowed")
 ORACLE_SPOT_DIVERGENCE_PCT = Gauge(

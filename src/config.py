@@ -107,10 +107,42 @@ class Settings(BaseSettings):
     cooldown_consecutive_losses: int = 3
     cooldown_drawdown_pct: float = 0.05
     cooldown_minutes: int = 15
-    max_daily_loss: float = 250.0
+    max_daily_loss_usd: float = Field(
+        default=250.0,
+        validation_alias=AliasChoices("max_daily_loss_usd", "max_daily_loss", "MAX_DAILY_LOSS_USD", "MAX_DAILY_LOSS"),
+    )
+    max_daily_loss_pct: float = Field(
+        default=0.05,
+        validation_alias=AliasChoices("max_daily_loss_pct", "MAX_DAILY_LOSS_PCT"),
+    )
     max_trades_per_hour: int = 4
-    max_open_exposure_per_market: float = 100.0
-    max_total_open_exposure: float = 500.0
+    max_open_exposure_per_market_usd: float = Field(
+        default=100.0,
+        validation_alias=AliasChoices(
+            "max_open_exposure_per_market_usd",
+            "max_open_exposure_per_market",
+            "MAX_OPEN_EXPOSURE_PER_MARKET_USD",
+            "MAX_OPEN_EXPOSURE_PER_MARKET",
+        ),
+    )
+    max_open_exposure_per_market_pct: float = Field(
+        default=0.05,
+        validation_alias=AliasChoices("max_open_exposure_per_market_pct", "MAX_OPEN_EXPOSURE_PER_MARKET_PCT"),
+    )
+    max_total_open_exposure_usd: float = Field(
+        default=500.0,
+        validation_alias=AliasChoices(
+            "max_total_open_exposure_usd",
+            "max_total_open_exposure",
+            "MAX_TOTAL_OPEN_EXPOSURE_USD",
+            "MAX_TOTAL_OPEN_EXPOSURE",
+        ),
+    )
+    max_total_open_exposure_pct: float = Field(
+        default=0.15,
+        validation_alias=AliasChoices("max_total_open_exposure_pct", "MAX_TOTAL_OPEN_EXPOSURE_PCT"),
+    )
+    allow_dry_run_equity_fallback: bool = True
     exposure_reconcile_every_n_trades: int = 10
     risk_state_path: str = ".state/risk_state.json"
 
@@ -177,5 +209,23 @@ class Settings(BaseSettings):
             raise ValueError("Unsafe configuration: spot_quorum_min_sources must be >= 2")
         if self.fee_rate_ttl_seconds <= 0:
             raise ValueError("Unsafe configuration: fee_rate_ttl_seconds must be > 0")
+        if self.max_daily_loss_pct <= 0:
+            raise ValueError("Unsafe configuration: max_daily_loss_pct must be > 0")
+        if self.max_open_exposure_per_market_pct <= 0:
+            raise ValueError("Unsafe configuration: max_open_exposure_per_market_pct must be > 0")
+        if self.max_total_open_exposure_pct <= 0:
+            raise ValueError("Unsafe configuration: max_total_open_exposure_pct must be > 0")
 
         return self
+
+    @property
+    def max_daily_loss(self) -> float:
+        return self.max_daily_loss_usd
+
+    @property
+    def max_open_exposure_per_market(self) -> float:
+        return self.max_open_exposure_per_market_usd
+
+    @property
+    def max_total_open_exposure(self) -> float:
+        return self.max_total_open_exposure_usd
