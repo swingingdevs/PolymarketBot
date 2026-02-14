@@ -53,6 +53,11 @@ ORACLE_SPOT_DIVERGENCE_PCT = Gauge(
 )
 FEED_LAG_SECONDS = Gauge("feed_lag_seconds", "Current feed lag in seconds", ["feed"])
 FEED_BLOCKED_STALE_PRICE = Gauge("feed_blocked_stale_price", "1 if stale price feed is currently blocking trading")
+FEED_MODE = Gauge("bot_feed_mode", "Current execution-authoritative feed mode", ["mode"])
+RECOVERY_STABILIZATION_ACTIVE = Gauge(
+    "bot_recovery_stabilization_active",
+    "1 while waiting for RTDS freshness stabilization before live trading resumes",
+)
 
 
 def start_metrics_server(host: str, port: int) -> None:
