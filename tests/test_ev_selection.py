@@ -96,6 +96,47 @@ def test_depth_penalty_scales_with_displayed_size_shortfall() -> None:
     assert low_depth.ev_exec < high_depth.ev_exec
 
 
+def test_candidate_ev_has_sufficient_depth_keeps_fill_probability() -> None:
+    sm = StrategyStateMachine(0.005, hammer_secs=15, d_min=1.0, max_entry_price=0.99, fee_bps=0, expected_notional_usd=20.0)
+
+    t0 = 1_710_000_000
+    _seed_state(sm, t0)
+    m5 = UpDownMarket("m5", t0 - 285, t0 + 15, "u5", "d5", 5)
+
+    candidate = sm._candidate_ev(m5, "UP", ask=0.40, bid=0.35, ask_size=60.0, fill_prob=0.9)
+
+    assert candidate is not None
+    assert candidate.fill_prob == 0.9
+
+
+def test_candidate_ev_forces_fill_probability_to_zero_when_depth_is_insufficient() -> None:
+    sm = StrategyStateMachine(0.005, hammer_secs=15, d_min=1.0, max_entry_price=0.99, fee_bps=0, expected_notional_usd=20.0)
+
+    t0 = 1_710_000_000
+    _seed_state(sm, t0)
+    m5 = UpDownMarket("m5", t0 - 285, t0 + 15, "u5", "d5", 5)
+
+    candidate = sm._candidate_ev(m5, "UP", ask=0.40, bid=0.35, ask_size=49.0, fill_prob=0.9)
+
+    assert candidate is not None
+    assert candidate.fill_prob == 0.0
+    assert candidate.ev == 0.0
+
+
+def test_candidate_ev_depth_boundary_uses_equality_as_sufficient_depth() -> None:
+    sm = StrategyStateMachine(0.005, hammer_secs=15, d_min=1.0, max_entry_price=0.99, fee_bps=0, expected_notional_usd=20.0)
+
+    t0 = 1_710_000_000
+    _seed_state(sm, t0)
+    m5 = UpDownMarket("m5", t0 - 285, t0 + 15, "u5", "d5", 5)
+
+    # required_shares = quote_size_usd / ask = 20 / 0.4 = 50
+    candidate = sm._candidate_ev(m5, "UP", ask=0.40, bid=0.35, ask_size=50.0, fill_prob=0.9)
+
+    assert candidate is not None
+    assert candidate.fill_prob == 0.9
+
+
 def test_candidate_ev_uses_token_fee_rate_with_global_fallback() -> None:
     cache = TokenMetadataCache(ttl_seconds=300)
     cache.put("u5", TokenMetadata(tick_size=0.01, fee_rate_bps=40))
