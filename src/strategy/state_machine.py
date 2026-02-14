@@ -52,6 +52,7 @@ class StrategyStateMachine:
         d_min: float,
         max_entry_price: float,
         fee_bps: float,
+        price_stale_after_seconds: float = 2.0,
         probability_calibrator: ProbabilityCalibrator | None = None,
         calibration_input: CalibrationInput = "p_hat",
         token_metadata_cache: TokenMetadataCache | None = None,
@@ -64,6 +65,7 @@ class StrategyStateMachine:
         self.d_min = d_min
         self.max_entry_price = max_entry_price
         self.fee_bps = fee_bps
+        self.price_stale_after_seconds = price_stale_after_seconds
         self.probability_calibrator = probability_calibrator or IdentityCalibrator()
         self.calibration_input = calibration_input
         self.token_metadata_cache = token_metadata_cache
@@ -147,7 +149,9 @@ class StrategyStateMachine:
         if not validate_price_source(metadata):
             logger.warning("invalid_price_source", metadata=metadata)
             return
-        if is_price_stale(float(metadata.get("timestamp", ts)), stale_after_seconds=2.0):
+        if is_price_stale(
+            float(metadata.get("timestamp", ts)), stale_after_seconds=self.price_stale_after_seconds
+        ):
             logger.warning("stale_price_update", timestamp=metadata.get("timestamp", ts))
             STALE_FEED.inc()
 
