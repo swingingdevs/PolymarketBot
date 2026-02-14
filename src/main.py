@@ -15,7 +15,7 @@ from feeds.rtds import RTDSFeed
 from logging_utils import configure_logging
 from markets.gamma_cache import GammaCache, UpDownMarket
 from markets.token_metadata_cache import TokenMetadataCache
-from metrics import start_metrics_server
+from metrics import HAMMER_ATTEMPTED, HAMMER_FILLED, KILL_SWITCH_ACTIVE, STALE_FEED, start_metrics_server
 from strategy.calibration import load_probability_calibrator
 from strategy.state_machine import StrategyStateMachine
 
@@ -215,11 +215,50 @@ async def orchestrate() -> None:
         if now % 60 == 0:
             await refresh_markets(now)
 
+        divergence_raw = metadata.get("divergence_pct")
+        divergence_pct = float(divergence_raw) if divergence_raw is not None else None
+        kill_switch_active = bool(kill_switch_state["active"])
+
+        if divergence_pct is not None:
+            kill_switch_state["last_divergence_pct"] = divergence_pct
+            threshold = settings.divergence_threshold_pct
+            if divergence_pct >= threshold:
+                breach_started_at = kill_switch_state["breach_started_at"]
+                if breach_started_at is None:
+                    kill_switch_state["breach_started_at"] = ts
+                elif not kill_switch_active and (ts - float(breach_started_at)) >= settings.divergence_sustain_seconds:
+                    kill_switch_state["active"] = True
+                    KILL_SWITCH_ACTIVE.set(1)
+                    logger.error(
+                        "divergence_kill_switch_activated",
+                        divergence_pct=divergence_pct,
+                        threshold_pct=threshold,
+                        sustain_seconds=settings.divergence_sustain_seconds,
+                    )
+            else:
+                kill_switch_state["breach_started_at"] = None
+                if kill_switch_active:
+                    kill_switch_state["active"] = False
+                    KILL_SWITCH_ACTIVE.set(0)
+                    logger.info(
+                        "divergence_kill_switch_cleared",
+                        divergence_pct=divergence_pct,
+                        threshold_pct=threshold,
+                    )
+
         if not strategy.watch_mode:
             return
 
         best = strategy.pick_best(now, list(market_state.values()), {})
         if best and best.ev > 0:
+            if bool(kill_switch_state["active"]):
+                logger.warning(
+                    "order_blocked_by_divergence_kill_switch",
+                    token_id=best.token_id,
+                    divergence_pct=kill_switch_state["last_divergence_pct"],
+                )
+                return
+
             logger.info(
                 "trade_candidate",
                 ev=best.ev,
@@ -228,12 +267,21 @@ async def orchestrate() -> None:
                 direction=best.direction,
                 horizon=best.market.horizon_minutes,
             )
-            await trader.buy_fok(best.token_id, best.ask, str(best.market.horizon_minutes))
+            HAMMER_ATTEMPTED.inc()
+            filled = await trader.buy_fok(best.token_id, best.ask, str(best.market.horizon_minutes))
+            if filled:
+                HAMMER_FILLED.inc()
 
     feed_state = {
         "mode": "rtds",
         "last_rtds_update": time.time(),
     }
+    kill_switch_state: dict[str, object] = {
+        "breach_started_at": None,
+        "active": False,
+        "last_divergence_pct": None,
+    }
+    KILL_SWITCH_ACTIVE.set(0)
     fallback_task: asyncio.Task[None] | None = None
 
     async def consume_rtds() -> None:
@@ -261,9 +309,11 @@ async def orchestrate() -> None:
                 if feed_state["mode"] != "fallback":
                     feed_state["mode"] = "fallback"
                     logger.warning("enter_fallback_chainlink_direct", staleness_seconds=age)
+                    STALE_FEED.inc()
                     fallback_task = asyncio.create_task(consume_fallback())
                 else:
                     logger.warning("still_degraded_using_fallback", staleness_seconds=age)
+                    STALE_FEED.inc()
                 continue
 
             if feed_state["mode"] == "fallback":
