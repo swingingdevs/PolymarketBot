@@ -12,7 +12,7 @@ class _FakeClobClient:
         self.creds = None
         self.derived_creds = {"api_key": "dk", "api_secret": "ds", "api_passphrase": "dp"}
         self.derive_called = False
-        self.create_market_order_called = False
+        self.create_order_called = False
         self.post_order_called = False
 
     def derive_api_key(self):
@@ -22,13 +22,13 @@ class _FakeClobClient:
     def set_api_creds(self, creds) -> None:
         self.creds = creds
 
-    def create_market_order(self, **kwargs):
-        self.create_market_order_called = True
-        return kwargs
+    def create_order(self, order_args):
+        self.create_order_called = True
+        return dict(order_args.__dict__)
 
-    def post_order(self, order, time_in_force="FOK"):
+    def post_order(self, order, orderType="GTC"):
         self.post_order_called = True
-        return {"ok": True, "order": order, "time_in_force": time_in_force}
+        return {"ok": True, "order": order, "orderType": orderType}
 
 
 def _build_settings(tmp_path, **overrides):
@@ -48,10 +48,13 @@ def _build_settings(tmp_path, **overrides):
         "api_passphrase": "",
         "quote_size_usd": 20.0,
         "max_usd_per_trade": 100.0,
-        "max_daily_loss": 250.0,
+        "max_daily_loss_usd": 250.0,
+        "max_daily_loss_pct": 0.0,
         "max_trades_per_hour": 4,
-        "max_open_exposure_per_market": 500.0,
-        "max_total_open_exposure": 5000.0,
+        "max_open_exposure_per_market_usd": 500.0,
+        "max_open_exposure_per_market_pct": 0.0,
+        "max_total_open_exposure_usd": 5000.0,
+        "max_total_open_exposure_pct": 0.0,
         "exposure_reconcile_every_n_trades": 10,
         "max_risk_pct_cap": 0.02,
         "risk_pct_per_trade": 0.01,
@@ -62,7 +65,7 @@ def _build_settings(tmp_path, **overrides):
         "cooldown_drawdown_pct": 0.05,
         "cooldown_minutes": 15,
         "fee_rate_ttl_seconds": 60.0,
-        "enable_fee_rate": True,
+        "enable_fee_rate": False,
         "default_fee_rate_bps": 12.0,
         "order_submit_timeout_seconds": 1.0,
         "equity_usd": 1000.0,

@@ -84,6 +84,19 @@ RECOVERY_STABILIZATION_ACTIVE = Gauge(
     "bot_recovery_stabilization_active",
     "1 while waiting for RTDS freshness stabilization before live trading resumes",
 )
+BOT_API_CREDS_AGE_SECONDS = Gauge("bot_api_creds_age_seconds", "Age of active API credentials in seconds")
+
+HEARTBEAT_SEND_ATTEMPTS = Counter("bot_heartbeat_send_attempts_total", "Number of heartbeat send attempts")
+HEARTBEAT_SEND_SUCCESS = Counter("bot_heartbeat_send_success_total", "Number of successful heartbeat sends")
+HEARTBEAT_SEND_FAILURE = Counter("bot_heartbeat_send_failure_total", "Number of failed heartbeat sends")
+HEARTBEAT_CONSECUTIVE_MISSES = Gauge("bot_heartbeat_consecutive_misses", "Current consecutive heartbeat misses")
+HEARTBEAT_CANCEL_ACTIONS = Counter(
+    "bot_heartbeat_cancel_actions_total",
+    "Cancel actions triggered after heartbeat failures",
+    ["status"],
+)
+BOT_FEE_FETCH_FAILURES_TOTAL = Counter("bot_fee_fetch_failures_total", "Fee-rate fetch failures")
+BOT_FEE_RATE_BPS = Gauge("bot_fee_rate_bps", "Resolved fee rate bps by token", ["token_id"])
 
 
 def start_metrics_server(host: str, port: int) -> None:

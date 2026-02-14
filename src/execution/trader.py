@@ -19,6 +19,7 @@ from auth.credentials import CredentialValidationError, init_client
 from metrics import (
     BOT_API_CREDS_AGE_SECONDS,
     DAILY_REALIZED_PNL,
+    HEARTBEAT_CANCEL_ACTIONS,
     MAX_DAILY_LOSS_PCT_CONFIGURED,
     MAX_DAILY_LOSS_USD_CONFIGURED,
     MAX_OPEN_EXPOSURE_PER_MARKET_PCT_CONFIGURED,
@@ -55,6 +56,7 @@ class RiskState:
     consecutive_losses: int = 0
     cooldown_until_ts: float = 0.0
     peak_equity_usd: float = 0.0
+    last_trade_ts: float = 0.0
 
     def __post_init__(self) -> None:
         if self.open_exposure_usd_by_market is None:
@@ -236,6 +238,7 @@ class Trader:
             consecutive_losses=int(payload.get("consecutive_losses", 0)),
             cooldown_until_ts=float(payload.get("cooldown_until_ts", 0.0)),
             peak_equity_usd=float(payload.get("peak_equity_usd", 0.0)),
+            last_trade_ts=float(payload.get("last_trade_ts", 0.0)),
         )
         if state.total_open_notional_usd <= 0 and state.open_exposure_usd_by_market:
             state.total_open_notional_usd = sum(state.open_exposure_usd_by_market.values())
@@ -538,6 +541,10 @@ class Trader:
             return True
         if self.risk.trades_this_hour >= self.settings.max_trades_per_hour:
             return True
+        min_interval = max(0, int(getattr(self.settings, "min_trade_interval_seconds", 0)))
+        if min_interval > 0 and self.risk.last_trade_ts > 0:
+            if (time.time() - self.risk.last_trade_ts) < min_interval:
+                return True
         market_key = self._market_exposure_key(
             token_id,
             horizon,
@@ -760,6 +767,7 @@ class Trader:
         market_start_epoch: int | None = None,
     ) -> None:
         self._reset_daily_pnl_if_needed()
+        self.risk.last_trade_ts = time.time()
         realized_pnl = self._extract_realized_pnl(resp)
         if realized_pnl:
             self.risk.daily_realized_pnl += realized_pnl
@@ -839,7 +847,7 @@ class Trader:
         if self.client is None:
             raise RuntimeError("missing_clob_client")
 
-        if hasattr(self.client, "create_limit_order") and hasattr(self.client, "post_order"):
+        if hasattr(self.client, "create_order") and hasattr(self.client, "post_order"):
             self.order_builder.clob_client = self.client
             limit_order, used_fallback, fee_rate_bps = self.order_builder.build_signed_order(
                 token_id=token_id,
@@ -851,136 +859,57 @@ class Trader:
             if used_fallback and bool(getattr(self.settings, "enable_fee_rate", True)):
                 raise RuntimeError("fee_rate_unavailable_monitor_only")
             logger.info("order_fee_rate", token_id=token_id, fee_rate_bps=fee_rate_bps)
-            try:
-                return self.client.post_order(limit_order, time_in_force="FOK")
-            except TypeError:
-                return self.client.post_order(limit_order)
+            return self.client.post_order(limit_order, orderType="FOK")
 
         raise RuntimeError("unsupported_order_submission_api")
 
-    def _submit_fok_sequential(
-        self,
-        signed_orders: list[tuple[BatchOrderLeg, Any]],
-    ) -> BatchSubmitResult:
-        assert self.client is not None
-        results: list[BatchOrderResult] = []
-        for idx, (leg, signed_order) in enumerate(signed_orders):
-            try:
-                try:
-                    response = self.client.post_order(signed_order, time_in_force=leg.time_in_force)
-                except TypeError:
-                    response = self.client.post_order(signed_order)
-            except Exception as exc:
-                results.append(BatchOrderResult(index=idx, token_id=leg.token_id, ok=False, error=str(exc)))
-            else:
-                results.append(BatchOrderResult(index=idx, token_id=leg.token_id, ok=bool(response), response=response))
-        return BatchSubmitResult(
-            ok=all(result.ok for result in results),
-            atomic=False,
-            used_batch_endpoint=False,
-            results=results,
-        )
-
-    def _submit_live_fok_batch(self, legs: list[BatchOrderLeg], *, atomic: bool) -> BatchSubmitResult:
-        if self.client is None:
-            raise RuntimeError("missing_clob_client")
-        if len(legs) == 0:
-            return BatchSubmitResult(ok=True, atomic=atomic, used_batch_endpoint=False, results=[])
-        max_size = int(getattr(self.settings, "batch_order_max_size", 15))
-        if len(legs) > max_size:
-            raise ValueError(f"batch_order_max_size_exceeded:{len(legs)}>{max_size}")
-
-        if not bool(getattr(self.settings, "batch_orders_enabled", False)):
-            raise RuntimeError("batch_orders_disabled")
-
-        self.order_builder.clob_client = self.client
-        signed_orders: list[tuple[BatchOrderLeg, Any]] = []
-        results: list[BatchOrderResult] = []
-        for idx, leg in enumerate(legs):
-            try:
-                signed_order, used_fallback, fee_rate_bps = self.order_builder.build_signed_order(
-                    token_id=leg.token_id,
-                    price=leg.price,
-                    size=leg.size,
-                    side=leg.side,
-                    time_in_force=leg.time_in_force,
-                )
-                if used_fallback and bool(getattr(self.settings, "enable_fee_rate", True)):
-                    raise RuntimeError("fee_rate_unavailable_monitor_only")
-                logger.info("order_fee_rate", token_id=leg.token_id, fee_rate_bps=fee_rate_bps)
-            except Exception as exc:
-                results.append(BatchOrderResult(index=idx, token_id=leg.token_id, ok=False, error=str(exc)))
-                if atomic:
-                    return BatchSubmitResult(ok=False, atomic=True, used_batch_endpoint=False, results=results)
-            else:
-                signed_orders.append((leg, signed_order))
-
-        if len(results) > 0 and not atomic:
-            submitted = self._submit_fok_sequential(signed_orders)
-            return BatchSubmitResult(
-                ok=False,
-                atomic=False,
-                used_batch_endpoint=False,
-                results=results + submitted.results,
-            )
-
-        post_orders = getattr(self.client, "post_orders", None) or getattr(self.client, "post_batch_orders", None)
-        if callable(post_orders):
-            payload = [order for _, order in signed_orders]
-            kwargs = {"atomic": atomic, "time_in_force": "FOK"}
-            try:
-                try:
-                    response = post_orders(payload, **kwargs)
-                except TypeError:
-                    response = post_orders(payload)
-            except Exception as exc:
-                return BatchSubmitResult(
-                    ok=False,
-                    atomic=atomic,
-                    used_batch_endpoint=True,
-                    results=[BatchOrderResult(index=i, token_id=leg.token_id, ok=False, error=str(exc)) for i, leg in enumerate(legs)],
-                )
-
-            if isinstance(response, list):
-                mapped = [
-                    BatchOrderResult(index=i, token_id=legs[i].token_id, ok=bool(item), response=item)
-                    for i, item in enumerate(response[: len(legs)])
-                ]
-            else:
-                mapped = [BatchOrderResult(index=i, token_id=leg.token_id, ok=bool(response), response=response) for i, leg in enumerate(legs)]
-            return BatchSubmitResult(ok=all(item.ok for item in mapped), atomic=atomic, used_batch_endpoint=True, results=mapped)
-
-        if atomic:
-            return BatchSubmitResult(
-                ok=False,
-                atomic=True,
-                used_batch_endpoint=False,
-                results=[
-                    BatchOrderResult(index=i, token_id=leg.token_id, ok=False, error="atomic_batch_unsupported_by_client")
-                    for i, leg in enumerate(legs)
-                ],
-            )
-
-        return self._submit_fok_sequential(signed_orders)
-
-    async def submit_fok_batch(self, legs: list[BatchOrderLeg], *, atomic: bool = True) -> BatchSubmitResult:
+    def send_heartbeat(self) -> bool:
         if self.settings.dry_run:
-            return BatchSubmitResult(
-                ok=True,
-                atomic=atomic,
-                used_batch_endpoint=False,
-                results=[BatchOrderResult(index=i, token_id=leg.token_id, ok=True, response={"dry_run": True}) for i, leg in enumerate(legs)],
-            )
-
+            return True
         if self.client is None:
-            raise RuntimeError("missing_clob_client")
-        if not self._live_auth_ready:
-            raise RuntimeError("missing_clob_l2_credentials")
+            logger.warning("heartbeat_skipped_missing_client")
+            return False
 
-        return await asyncio.wait_for(
-            asyncio.to_thread(self._submit_live_fok_batch, legs, atomic=atomic),
-            timeout=self.settings.order_submit_timeout_seconds,
-        )
+        for method_name in ("heartbeat", "send_heartbeat", "post_heartbeat", "create_heartbeat"):
+            method = getattr(self.client, method_name, None)
+            if method is None:
+                continue
+            try:
+                response = method()
+            except Exception as exc:
+                logger.warning("heartbeat_send_error", method=method_name, error=str(exc))
+                return False
+            logger.debug("heartbeat_sent", method=method_name, response=response)
+            return True
+
+        logger.warning("heartbeat_method_unavailable")
+        return False
+
+    async def cancel_outstanding_orders(self) -> bool:
+        if self.settings.dry_run:
+            HEARTBEAT_CANCEL_ACTIONS.labels(status="skipped_dry_run").inc()
+            logger.info("cancel_outstanding_orders_skipped_dry_run")
+            return False
+        if self.client is None:
+            HEARTBEAT_CANCEL_ACTIONS.labels(status="missing_client").inc()
+            logger.warning("cancel_outstanding_orders_missing_client")
+            return False
+
+        for method_name in ("cancel_all", "cancel_all_orders", "cancel_orders"):
+            method = getattr(self.client, method_name, None)
+            if method is None:
+                continue
+            try:
+                await asyncio.to_thread(method)
+                logger.warning("cancel_outstanding_orders_executed", method=method_name)
+                return True
+            except Exception as exc:
+                logger.warning("cancel_outstanding_orders_failed", method=method_name, error=str(exc))
+                return False
+
+        HEARTBEAT_CANCEL_ACTIONS.labels(status="endpoint_unavailable").inc()
+        logger.warning("cancel_outstanding_orders_endpoint_unavailable")
+        return False
 
     async def buy_fok(
         self,

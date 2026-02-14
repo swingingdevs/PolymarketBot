@@ -119,6 +119,7 @@ def init_client(
         host=host,
         chain_id=chain_id,
         key=signer,
+        creds=derived_creds,
         signature_type=int(signature_type),
         funder=funder,
     )

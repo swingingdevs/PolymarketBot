@@ -28,6 +28,10 @@ class BookTop:
     fill_prob: float | None = None
     bids_levels: list[tuple[float, float]] | None = None
     asks_levels: list[tuple[float, float]] | None = None
+    last_trade_hash: str | None = None
+    last_trade_side: str | None = None
+    last_trade_price: float | None = None
+    last_trade_size: float | None = None
 
 
 @dataclass(slots=True)
@@ -232,6 +236,10 @@ class CLOBWebSocket:
         bid_size: float | None,
         ask_size: float | None,
         ts: float,
+        last_trade_hash: str | None = None,
+        last_trade_side: str | None = None,
+        last_trade_price: float | None = None,
+        last_trade_size: float | None = None,
     ) -> BookTop:
         prev = self._book_tops.get(token_id)
         top = BookTop(
@@ -241,9 +249,18 @@ class CLOBWebSocket:
             best_bid_size=bid_size if bid_size is not None else (prev.best_bid_size if prev is not None else None),
             best_ask_size=ask_size if ask_size is not None else (prev.best_ask_size if prev is not None else None),
             ts=ts,
+            last_trade_hash=last_trade_hash if last_trade_hash is not None else (prev.last_trade_hash if prev is not None else None),
+            last_trade_side=last_trade_side if last_trade_side is not None else (prev.last_trade_side if prev is not None else None),
+            last_trade_price=last_trade_price if last_trade_price is not None else (prev.last_trade_price if prev is not None else None),
+            last_trade_size=last_trade_size if last_trade_size is not None else (prev.last_trade_size if prev is not None else None),
         )
         self._book_tops[token_id] = top
         return top
+
+    @staticmethod
+    def _normalize_trade_side(side: object) -> str | None:
+        normalized = str(side or "").strip().lower()
+        return normalized if normalized in {"buy", "sell"} else None
 
     def _apply_legacy_level_update(
         self,
@@ -316,6 +333,11 @@ class CLOBWebSocket:
                     ask = self._coerce_positive_float(change.get("best_ask"))
                     bid_size = self._coerce_positive_float(change.get("best_bid_size"))
                     ask_size = self._coerce_positive_float(change.get("best_ask_size"))
+                    raw_hash = change.get("hash")
+                    last_trade_hash = str(raw_hash).strip() if raw_hash is not None and str(raw_hash).strip() else None
+                    last_trade_side = self._normalize_trade_side(change.get("side"))
+                    last_trade_price = self._coerce_positive_float(change.get("price"))
+                    last_trade_size = self._coerce_positive_float(change.get("size"))
                     ts = normalize_ts(change.get("timestamp", outer_ts))
                     tops.append(
                         self._record_book_top(
@@ -325,6 +347,10 @@ class CLOBWebSocket:
                             bid_size=bid_size,
                             ask_size=ask_size,
                             ts=ts,
+                            last_trade_hash=last_trade_hash,
+                            last_trade_side=last_trade_side,
+                            last_trade_price=last_trade_price,
+                            last_trade_size=last_trade_size,
                         )
                     )
                     CLOB_PRICE_CHANGE_PARSED.labels(schema="new").inc()
