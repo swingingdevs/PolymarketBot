@@ -78,6 +78,8 @@ class Settings(BaseSettings):
     chainlink_direct_api_url: str = "https://api.exchange.coinbase.com/products/BTC-USD/ticker"
     use_fallback_feed: bool = False
     allow_orders_while_fallback_active: bool = False
+    rtds_recovery_stabilization_seconds: float = 10.0
+    rtds_recovery_min_fresh_updates: int = 3
 
     settings_profile: Literal["paper", "live", "high_vol", "low_vol"] = "paper"
     watch_return_threshold: float = 0.005
@@ -128,7 +130,9 @@ class Settings(BaseSettings):
     metrics_host: str = "0.0.0.0"
     metrics_port: int = 9102
     token_metadata_ttl_seconds: float = 300.0
-    fee_rate_ttl_seconds: float = 300.0
+    fee_rate_ttl_seconds: float = 60.0
+    enable_fee_rate: bool = True
+    default_fee_rate_bps: float = 12.0
     recorder_enabled: bool = False
     recorder_output_path: str = "artifacts/session_recording.jsonl"
     recorder_queue_maxsize: int = 10000
@@ -178,5 +182,9 @@ class Settings(BaseSettings):
             raise ValueError("Unsafe configuration: spot_quorum_min_sources must be >= 2")
         if self.fee_rate_ttl_seconds <= 0:
             raise ValueError("Unsafe configuration: fee_rate_ttl_seconds must be > 0")
+        if self.rtds_recovery_stabilization_seconds <= 0:
+            raise ValueError("Unsafe configuration: rtds_recovery_stabilization_seconds must be > 0")
+        if self.rtds_recovery_min_fresh_updates <= 0:
+            raise ValueError("Unsafe configuration: rtds_recovery_min_fresh_updates must be > 0")
 
         return self
