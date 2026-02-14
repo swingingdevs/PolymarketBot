@@ -20,6 +20,8 @@ class RTDSFeed:
         ws_url: str,
         symbol: str = "btc/usd",
         topic: str = "crypto_prices_chainlink",
+        spot_topic: str = "crypto_prices",
+        spot_max_age_seconds: float = 2.0,
         ping_interval: int = 30,
         pong_timeout: int = 10,
         reconnect_delay_min: int = 1,
@@ -31,6 +33,8 @@ class RTDSFeed:
         self.ws_url = ws_url
         self.symbol = symbol
         self.topic = topic
+        self.spot_topic = spot_topic
+        self.spot_max_age_seconds = spot_max_age_seconds
         self.ping_interval = ping_interval
         self.pong_timeout = pong_timeout
         self.reconnect_delay_min = reconnect_delay_min
@@ -75,7 +79,12 @@ class RTDSFeed:
                                 "topic": self.topic,
                                 "type": "*",
                                 "filters": json.dumps({"symbol": normalized_symbol}),
-                            }
+                            },
+                            {
+                                "topic": self.spot_topic,
+                                "type": "*",
+                                "filters": json.dumps({"symbol": normalized_symbol}),
+                            },
                         ],
                     }
                     await ws.send(json.dumps(sub))
@@ -126,8 +135,8 @@ class RTDSFeed:
                                 "received_ts": time.time(),
                                 "timestamp": price_ts,
                             }
-                            spot_latest = self._latest_by_topic_symbol.get(("crypto_prices", payload_symbol))
-                            if spot_latest is not None:
+                            spot_latest = self._latest_by_topic_symbol.get((self.spot_topic, payload_symbol))
+                            if spot_latest is not None and (price_ts - spot_latest[1]) <= self.spot_max_age_seconds:
                                 metadata["spot_price"] = spot_latest[0]
                                 metadata["divergence_pct"] = compare_feeds(price, spot_latest[0])
 

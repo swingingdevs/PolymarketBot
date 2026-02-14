@@ -47,6 +47,8 @@ class Settings(BaseSettings):
 
     symbol: str = "btc/usd"
     rtds_topic: str = "crypto_prices_chainlink"
+    rtds_spot_topic: str = "crypto_prices"
+    rtds_spot_max_age_seconds: float = 2.0
     log_price_comparison: bool = True
 
     divergence_threshold_pct: float = 0.5
