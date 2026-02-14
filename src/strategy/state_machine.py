@@ -10,7 +10,6 @@ from markets.gamma_cache import UpDownMarket
 from markets.token_metadata_cache import TokenMetadataCache
 from metrics import CURRENT_EV, REJECTED_MAX_ENTRY_PRICE, STALE_FEED, WATCH_EVENTS, WATCH_TRIGGERED
 from strategy.calibration import CalibrationInput, IdentityCalibrator, ProbabilityCalibrator
-from utils.fees import fee_cost_per_share_quote_equivalent
 from utils.price_validation import is_price_stale, validate_price_source
 
 logger = structlog.get_logger(__name__)
@@ -38,6 +37,8 @@ class BookSnapshot:
     bid_size: float | None = None
     ask_size: float | None = None
     fill_prob: float | None = None
+    bids_levels: list[tuple[float, float]] = field(default_factory=list)
+    asks_levels: list[tuple[float, float]] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -89,6 +90,7 @@ class StrategyStateMachine:
         d_min: float,
         max_entry_price: float,
         fee_bps: float,
+        fee_formula_exponent: float = 1.0,
         expected_notional_usd: float = 1.0,
         depth_penalty_coeff: float = 1.0,
         price_stale_after_seconds: float = 2.0,
@@ -104,6 +106,7 @@ class StrategyStateMachine:
         self.d_min = d_min
         self.max_entry_price = max_entry_price
         self.fee_bps = fee_bps
+        self.fee_formula_exponent = fee_formula_exponent
         self.expected_notional_usd = max(0.0, expected_notional_usd)
         self.depth_penalty_coeff = max(0.0, depth_penalty_coeff)
         self.price_stale_after_seconds = price_stale_after_seconds
@@ -169,6 +172,8 @@ class StrategyStateMachine:
         ask_size: float | None = None,
         fill_prob: float | None = None,
         ts: float | None = None,
+        bids_levels: list[tuple[float, float]] | None = None,
+        asks_levels: list[tuple[float, float]] | None = None,
     ) -> None:
         snap = self.books.get(token_id, BookSnapshot())
         if bid is not None:
@@ -179,6 +184,14 @@ class StrategyStateMachine:
             snap.bid_size = bid_size
         if ask_size is not None:
             snap.ask_size = ask_size
+        if bids_levels is not None:
+            snap.bids_levels = bids_levels
+        elif snap.bid is not None and snap.bid_size is not None:
+            snap.bids_levels = [(snap.bid, snap.bid_size)]
+        if asks_levels is not None:
+            snap.asks_levels = asks_levels
+        elif snap.ask is not None and snap.ask_size is not None:
+            snap.asks_levels = [(snap.ask, snap.ask_size)]
 
         inferred_fill_prob = self._estimate_fill_prob(token_id, snap.ask, ts)
         if fill_prob is not None:
@@ -304,6 +317,31 @@ class StrategyStateMachine:
     def _normal_cdf(x: float) -> float:
         return 0.5 * (1 + math.erf(x / math.sqrt(2)))
 
+
+    @staticmethod
+    def vwap_to_fill(size: float, asks_levels: list[tuple[float, float]]) -> float | None:
+        if size <= 0:
+            return None
+        if not asks_levels:
+            return None
+
+        remaining = size
+        notional = 0.0
+        for price, level_size in asks_levels:
+            if price <= 0 or level_size <= 0:
+                continue
+            take = min(remaining, level_size)
+            notional += take * price
+            remaining -= take
+            if remaining <= 1e-12:
+                return notional / size
+        return None
+
+    def _buy_fee_cost_per_share(self, *, ask: float, fee_rate_bps: float) -> float:
+        fee_rate = fee_rate_bps / 10_000.0
+        p = min(max(ask, 1e-9), 1 - 1e-9)
+        return p * fee_rate * ((p * (1 - p)) ** self.fee_formula_exponent)
+
     def _candidate_ev(
         self,
         market: UpDownMarket,
@@ -314,6 +352,7 @@ class StrategyStateMachine:
         fill_prob: float | None = None,
         token_id: str | None = None,
         expected_size: float | None = None,
+        asks_levels: list[tuple[float, float]] | None = None,
     ) -> Candidate | None:
         curr = self.last_price
         if curr is None or ask <= 0:
@@ -360,19 +399,20 @@ class StrategyStateMachine:
         if fee_bps is None:
             fee_cost = self.fee_bps / 10000.0
         else:
-            fee_cost = fee_cost_per_share_quote_equivalent(base_rate_bps=fee_bps, price=ask, side="BUY")
-        spread = max(0.0, ask - bid) if bid is not None else 0.0
-        spread_penalty = 0.5 * spread
+            fee_cost = self._buy_fee_cost_per_share(ask=ask, fee_rate_bps=fee_bps)
+
         required_shares = expected_size if expected_size is not None else (self.expected_notional_usd / ask)
         required_shares = max(0.0, required_shares)
-        depth_penalty = 0.0
-        if ask_size is not None and ask_size < required_shares:
-            shortfall = (required_shares - ask_size) / max(required_shares, 1e-9)
-            depth_penalty = shortfall * spread * self.depth_penalty_coeff
-        slippage_cost = spread_penalty + depth_penalty
+        vwap_price = self.vwap_to_fill(required_shares, asks_levels or [])
+        if vwap_price is None:
+            slippage_cost = 0.0
+            can_fill = False
+        else:
+            slippage_cost = max(0.0, vwap_price - ask)
+            can_fill = True
 
         effective_fill_prob = 1.0 if fill_prob is None else min(1.0, max(0.0, fill_prob))
-        if ask_size is not None and ask_size < required_shares:
+        if not can_fill:
             effective_fill_prob = 0.0
         ev_exec = p_hat - ask - fee_cost - slippage_cost
         ev = ev_exec * effective_fill_prob
@@ -413,6 +453,7 @@ class StrategyStateMachine:
                     ask_size=book.ask_size,
                     fill_prob=book.fill_prob,
                     token_id=tid,
+                    asks_levels=book.asks_levels,
                 )
                 if cand:
                     cand.token_id = tid

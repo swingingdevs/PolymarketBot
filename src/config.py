@@ -63,6 +63,7 @@ class Settings(BaseSettings):
     rtds_reconnect_delay_max: int = 60
     price_staleness_threshold: int = 10
     clob_book_staleness_threshold: int = 10
+    clob_book_depth_levels: int = 10
     chainlink_direct_api_url: str = "https://api.exchange.coinbase.com/products/BTC-USD/ticker"
     use_fallback_feed: bool = False
 
@@ -76,6 +77,7 @@ class Settings(BaseSettings):
     d_min: float = 5.0
     max_entry_price: float = 0.97
     fee_bps: float = 10.0
+    fee_formula_exponent: float = 1.0
 
     calibration_method: str = "none"
     calibration_input: str = "p_hat"
@@ -106,6 +108,7 @@ class Settings(BaseSettings):
     metrics_host: str = "0.0.0.0"
     metrics_port: int = 9102
     token_metadata_ttl_seconds: float = 300.0
+    fee_rate_ttl_seconds: float = 60.0
 
     @model_validator(mode="after")
     def apply_profile_defaults(self) -> "Settings":

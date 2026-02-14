@@ -95,3 +95,21 @@ def test_malformed_frames_emit_warning_and_dropped_metrics(
     assert warnings
     assert warnings[-1]["reason"] == expected_reason
     assert warnings[-1]["event_type"] == expected_event_type
+
+def test_parse_levels_respects_depth_limit() -> None:
+    clob = CLOBWebSocket("wss://ws-subscriptions-clob.polymarket.com", book_depth_levels=2)
+    payload = json.dumps(
+        {
+            "event_type": "book",
+            "asset_id": "token-a",
+            "timestamp": 1712345678,
+            "bids": [[0.44, 10], [0.43, 12], [0.42, 14]],
+            "asks": [[0.45, 11], [0.46, 13], [0.47, 15]],
+        }
+    )
+
+    tops = clob._parse_raw_message(payload, [0.0])
+
+    assert len(tops) == 1
+    assert tops[0].bids_levels == [(0.44, 10.0), (0.43, 12.0)]
+    assert tops[0].asks_levels == [(0.45, 11.0), (0.46, 13.0)]

@@ -108,7 +108,9 @@ def replay_with_params(rows: list[ReplayRow], markets: list[UpDownMarket], param
 
     for row in rows:
         if row.event == "book" and row.token_id:
-            sm.on_book(row.token_id, row.bid, row.ask)
+            asks_levels = [(row.ask, 1_000_000.0)] if row.ask is not None else None
+            bids_levels = [(row.bid, 1_000_000.0)] if row.bid is not None else None
+            sm.on_book(row.token_id, row.bid, row.ask, ask_size=1_000_000.0 if row.ask is not None else None, bid_size=1_000_000.0 if row.bid is not None else None, asks_levels=asks_levels, bids_levels=bids_levels)
             continue
         if row.event != "price" or row.price is None:
             continue
