@@ -10,6 +10,7 @@ import structlog
 import websockets
 
 from utils.price_validation import compare_feeds
+from utils.time import normalize_ts
 
 logger = structlog.get_logger(__name__)
 
@@ -18,7 +19,7 @@ class RTDSFeed:
     def __init__(
         self,
         ws_url: str,
-        symbol: str = "BTC/USD",
+        symbol: str = "btc/usd",
         topic: str = "crypto_prices_chainlink",
         ping_interval: int = 30,
         pong_timeout: int = 10,
@@ -39,28 +40,7 @@ class RTDSFeed:
 
         self._last_price_ts: float = 0.0
         self._comparison_count = 0
-
-    @staticmethod
-    def _extract_binance_price(payload: dict[str, object]) -> float | None:
-        candidates = (
-            payload.get("binance_price"),
-            payload.get("binancePrice"),
-            payload.get("spot_price"),
-            payload.get("spotPrice"),
-        )
-        for val in candidates:
-            if val is not None:
-                return float(val)
-
-        sources = payload.get("sources")
-        if isinstance(sources, dict):
-            for key in ("binance", "binance_spot", "spot"):
-                if key in sources:
-                    try:
-                        return float(sources[key])
-                    except Exception:
-                        return None
-        return None
+        self._latest_by_topic_symbol: dict[tuple[str, str], tuple[float, float]] = {}
 
     async def _heartbeat(self, ws: websockets.WebSocketClientProtocol, failed_pings: list[int]) -> None:
         while True:
@@ -79,6 +59,7 @@ class RTDSFeed:
         """Yield (timestamp, price, metadata) from Chainlink RTDS feed."""
         logger.info("rtds_startup_feed", topic=self.topic, symbol=self.symbol)
         normalized_symbol = self.symbol.lower()
+        subscribed_topics = ("crypto_prices_chainlink", "crypto_prices")
 
         backoff = self.reconnect_delay_min
         stable_since: float | None = None
@@ -91,10 +72,11 @@ class RTDSFeed:
                         "action": "subscribe",
                         "subscriptions": [
                             {
-                                "topic": self.topic,
+                                "topic": topic,
                                 "type": "market",
                                 "filters": json.dumps({"symbol": self.symbol}),
                             }
+                            for topic in subscribed_topics
                         ],
                     }
                     await ws.send(json.dumps(sub))
@@ -110,43 +92,55 @@ class RTDSFeed:
                             if payload_symbol != normalized_symbol:
                                 continue
 
+                            topic = str(data.get("topic") or payload.get("topic") or self.topic)
                             px = payload.get("value")
-                            ts = payload.get("timestamp_ms")
+                            ts = payload.get("timestamp", payload.get("timestamp_ms"))
                             if px is None or ts is None:
                                 continue
 
-                            chainlink_price = float(px)
-                            price_ts_ms = float(ts)
-                            price_ts = price_ts_ms / 1000.0
+                            price = float(px)
+                            price_ts = normalize_ts(ts)
                             self._last_price_ts = price_ts
+                            self._latest_by_topic_symbol[(topic, payload_symbol)] = (price, price_ts)
+
+                            chainlink_key = ("crypto_prices_chainlink", payload_symbol)
+                            spot_key = ("crypto_prices", payload_symbol)
+                            chainlink_latest = self._latest_by_topic_symbol.get(chainlink_key)
+                            spot_latest = self._latest_by_topic_symbol.get(spot_key)
+
+                            divergence_pct: float | None = None
+                            spot_price: float | None = None
+                            if chainlink_latest is not None and spot_latest is not None:
+                                spot_price = spot_latest[0]
+                                divergence_pct = compare_feeds(chainlink_latest[0], spot_price)
+
+                            if topic != "crypto_prices_chainlink":
+                                continue
+
                             metadata: dict[str, object] = {
                                 "source": "chainlink_rtds",
-                                "topic": self.topic,
+                                "topic": topic,
                                 "market": payload.get("market", "chainlink"),
                                 "received_ts": time.time(),
                                 "timestamp": price_ts,
-                                "timestamp_ms": price_ts_ms,
-                                "timestamp_s": price_ts,
                             }
 
-                            binance_price = self._extract_binance_price(payload)
-                            divergence_pct: float | None = None
-                            if binance_price is not None:
-                                divergence_pct = compare_feeds(chainlink_price, binance_price)
-                                metadata["binance_price"] = binance_price
+                            if spot_price is not None:
+                                metadata["spot_price"] = spot_price
+                            if divergence_pct is not None:
                                 metadata["divergence_pct"] = divergence_pct
 
                             if self.log_price_comparison and self._comparison_count < 100:
                                 logger.info(
                                     "price_comparison_sample",
                                     sample_index=self._comparison_count + 1,
-                                    chainlink_price=chainlink_price,
-                                    binance_price=binance_price,
+                                    chainlink_price=price,
+                                    spot_price=spot_price,
                                     divergence_pct=divergence_pct,
                                 )
                                 self._comparison_count += 1
 
-                            yield price_ts, chainlink_price, metadata
+                            yield price_ts, price, metadata
 
                             if stable_since and (time.time() - stable_since) >= 300:
                                 backoff = self.reconnect_delay_min

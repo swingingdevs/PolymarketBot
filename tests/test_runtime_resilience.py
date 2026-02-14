@@ -74,7 +74,7 @@ def test_clob_stale_detection_logs_warning_when_updates_stop(monkeypatch: pytest
         async def recv(self) -> str:
             if not self._sent_first:
                 self._sent_first = True
-                return '{"event_type":"book","asset_id":"token-a","bids":[["0.2","1"]],"asks":[["0.3","1"]],"timestamp":123}'
+                return '{"event_type":"book","asset_id":"token-a","bids":[{"price":"0.2","size":"1"}],"asks":[{"price":"0.3","size":"1"}],"timestamp":123000}'
             await asyncio.sleep(3600)
             return ""
 

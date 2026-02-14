@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 
 import structlog
 
@@ -203,7 +203,7 @@ async def orchestrate() -> None:
     last_refresh_ts = int(time.time())
     await refresh_markets(last_refresh_ts)
     clob = CLOBWebSocket(
-        settings.clob_ws_url,
+        f"{settings.clob_ws_url.rstrip('/')}/ws/market",
         ping_interval=settings.rtds_ping_interval,
         pong_timeout=settings.rtds_pong_timeout,
         reconnect_delay_min=settings.rtds_reconnect_delay_min,
@@ -383,15 +383,34 @@ async def orchestrate() -> None:
                 clob_resubscribe_event.clear()
                 await wait_for_token_set_to_stabilize()
                 subscribe_reason = token_change_reason
+                updated_tokens = sorted(token_ids)
+                await clob.update_subscriptions(updated_tokens)
                 logger.info(
                     "clob_resubscribe_triggered",
                     reason=subscribe_reason,
                     debounce_seconds=clob_resubscribe_debounce_seconds,
-                    token_count=len(token_ids),
+                    token_count=len(updated_tokens),
+                    token_ids=updated_tokens,
                 )
-                break
 
-    await asyncio.gather(consume_rtds(), consume_clob(), monitor_rtds_staleness())
+    async def run_resilient(name: str, worker: Callable[[], Awaitable[None]]) -> None:
+        backoff = 1.0
+        while True:
+            try:
+                await worker()
+                backoff = 1.0
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.exception("supervisor_worker_crashed", worker=name, error=str(exc), backoff_seconds=backoff)
+                await asyncio.sleep(backoff)
+                backoff = min(60.0, backoff * 2)
+
+    await asyncio.gather(
+        run_resilient("consume_rtds", consume_rtds),
+        run_resilient("consume_clob", consume_clob),
+        run_resilient("monitor_rtds_staleness", monitor_rtds_staleness),
+    )
 
 
 if __name__ == "__main__":
