@@ -10,6 +10,7 @@ from markets.gamma_cache import UpDownMarket
 from markets.token_metadata_cache import TokenMetadataCache
 from metrics import CURRENT_EV, REJECTED_MAX_ENTRY_PRICE, STALE_FEED, WATCH_EVENTS, WATCH_TRIGGERED
 from strategy.calibration import CalibrationInput, IdentityCalibrator, ProbabilityCalibrator
+from utils.fees import fee_cost_per_share_quote_equivalent
 from utils.price_validation import is_price_stale, validate_price_source
 
 logger = structlog.get_logger(__name__)
@@ -292,10 +293,20 @@ class StrategyStateMachine:
         else:
             p_hat = self.probability_calibrator.calibrate(raw_p_hat)
 
-        fee_bps = self.fee_bps
+        fee_bps: float | None = None
         if token_id and self.token_metadata_cache is not None:
-            fee_bps = self.token_metadata_cache.get_fee_rate_bps(token_id, fallback_fee_bps=self.fee_bps)
-        fee_cost = fee_bps / 10000.0
+            metadata = self.token_metadata_cache.get(token_id, allow_stale=True)
+            if metadata and metadata.fee_rate_bps is not None and metadata.fee_rate_bps >= 0:
+                fee_bps = metadata.fee_rate_bps
+        if fee_bps is None and token_id:
+            market_metadata = market.token_metadata_by_id.get(token_id)
+            if market_metadata and market_metadata.fee_rate_bps is not None and market_metadata.fee_rate_bps >= 0:
+                fee_bps = market_metadata.fee_rate_bps
+
+        if fee_bps is None:
+            fee_cost = self.fee_bps / 10000.0
+        else:
+            fee_cost = fee_cost_per_share_quote_equivalent(base_rate_bps=fee_bps, price=ask, side="BUY")
         spread = max(0.0, ask - bid) if bid is not None else 0.0
         spread_penalty = 0.5 * spread
         depth_penalty = 0.0
