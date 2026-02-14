@@ -173,6 +173,16 @@ Quick operator verification markers:
 
 The script targets ~120 seconds runtime max and exits with a concise summary for go/no-go checks.
 
+## Data capture for replay/analysis
+
+1. Enable recorder env vars in `.env`:
+   - `RECORDER_ENABLED=true`
+   - `RECORDER_OUTPUT_PATH=artifacts/session_recording.jsonl`
+   - Optional: tune `RECORDER_QUEUE_SIZE` for buffering under higher event volume.
+2. Run the bot in paper mode (`DRY_RUN=true`).
+3. Verify the recorder file is growing at `artifacts/session_recording.jsonl` while the bot is active.
+4. Rotate/archive recorder files by session/date to keep replay datasets organized.
+
 ## Streamlit operations dashboard
 
 A dedicated operations dashboard is available at `dashboard.py`.
