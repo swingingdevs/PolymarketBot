@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 
 import structlog
@@ -92,19 +93,50 @@ async def orchestrate() -> None:
             )
             await trader.buy_fok(best.token_id, best.ask, str(best.market.horizon_minutes))
 
+    feed_state = {
+        "mode": "rtds",
+        "last_rtds_update": time.time(),
+    }
+    fallback_task: asyncio.Task[None] | None = None
+
     async def consume_rtds() -> None:
-        last_rtds_update = time.time()
         async for ts, px, metadata in rtds.stream_prices():
-            last_rtds_update = time.time()
+            feed_state["last_rtds_update"] = time.time()
+            if feed_state["mode"] != "rtds":
+                continue
             await process_price(ts, px, metadata)
 
-            if settings.use_fallback_feed and (time.time() - last_rtds_update) > settings.price_staleness_threshold:
-                logger.warning("switching_to_chainlink_direct_fallback")
-                async for fts, fpx, fmeta in fallback.stream_prices():
-                    await process_price(fts, fpx, fmeta)
-                    if (time.time() - last_rtds_update) <= settings.price_staleness_threshold:
-                        logger.info("switching_back_to_rtds")
-                        break
+    async def consume_fallback() -> None:
+        async for ts, px, metadata in fallback.stream_prices():
+            if feed_state["mode"] != "fallback":
+                return
+            await process_price(ts, px, metadata)
+
+    async def monitor_rtds_staleness() -> None:
+        nonlocal fallback_task
+        check_interval = max(0.1, min(1.0, settings.price_staleness_threshold / 2))
+        while True:
+            await asyncio.sleep(check_interval)
+            age = time.time() - float(feed_state["last_rtds_update"])
+            stale = age > settings.price_staleness_threshold
+
+            if stale and settings.use_fallback_feed:
+                if feed_state["mode"] != "fallback":
+                    feed_state["mode"] = "fallback"
+                    logger.warning("enter_fallback_chainlink_direct", staleness_seconds=age)
+                    fallback_task = asyncio.create_task(consume_fallback())
+                else:
+                    logger.warning("still_degraded_using_fallback", staleness_seconds=age)
+                continue
+
+            if feed_state["mode"] == "fallback":
+                feed_state["mode"] = "rtds"
+                logger.info("recovered_rtds_freshness", staleness_seconds=age)
+                if fallback_task and not fallback_task.done():
+                    fallback_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await fallback_task
+                fallback_task = None
 
     async def consume_clob() -> None:
         while True:
@@ -114,7 +146,7 @@ async def orchestrate() -> None:
             async for top in clob.stream_books(list(token_ids)):
                 strategy.on_book(top.token_id, top.best_bid, top.best_ask)
 
-    await asyncio.gather(consume_rtds(), consume_clob())
+    await asyncio.gather(consume_rtds(), consume_clob(), monitor_rtds_staleness())
 
 
 if __name__ == "__main__":
