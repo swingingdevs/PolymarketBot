@@ -23,6 +23,7 @@ from metrics import (
     HAMMER_ATTEMPTED,
     HAMMER_FILLED,
     KILL_SWITCH_ACTIVE,
+    BOT_API_CREDS_AGE_SECONDS,
     ORACLE_SPOT_DIVERGENCE_PCT,
     STALE_FEED,
     TRADING_ALLOWED,
@@ -33,6 +34,12 @@ from strategy.quorum_health import QuorumDecision, QuorumHealth
 from strategy.state_machine import StrategyStateMachine
 
 logger = structlog.get_logger(__name__)
+
+
+def update_api_credential_age_metric(created_at: float | None) -> None:
+    if created_at is None:
+        return
+    BOT_API_CREDS_AGE_SECONDS.set(max(0.0, time.time() - created_at))
 
 
 def update_quorum_metrics(decision: QuorumDecision) -> None:
@@ -142,6 +149,7 @@ async def orchestrate() -> None:
     settings = Settings()
     configure_logging()
     start_metrics_server(settings.metrics_host, settings.metrics_port)
+    update_api_credential_age_metric(None)
 
     gamma = GammaCache(str(settings.gamma_api_url))
     rtds = RTDSFeed(

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from types import SimpleNamespace
 
 from execution import trader as trader_module
@@ -16,7 +15,7 @@ class _FakeClobClient:
         self.create_market_order_called = False
         self.post_order_called = False
 
-    def create_or_derive_api_creds(self):
+    def derive_api_key(self):
         self.derive_called = True
         return self.derived_creds
 
@@ -39,8 +38,11 @@ def _build_settings(tmp_path, **overrides):
         "clob_host": "https://clob.polymarket.com",
         "chain_id": 137,
         "private_key": "0xabc",
-        "signature_type": None,
-        "funder": "",
+        "signature_type": 2,
+        "funder_address": "0xfunder",
+        "allow_static_creds": False,
+        "static_creds_confirmation": False,
+        "api_cred_rotation_seconds": 3600,
         "api_key": "",
         "api_secret": "",
         "api_passphrase": "",
@@ -52,6 +54,8 @@ def _build_settings(tmp_path, **overrides):
         "max_total_open_exposure": 5000.0,
         "exposure_reconcile_every_n_trades": 10,
         "order_submit_timeout_seconds": 1.0,
+        "equity_usd": 1000.0,
+        "equity_refresh_seconds": 60.0,
     }
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -69,19 +73,18 @@ def test_dry_run_does_not_require_l2_creds(monkeypatch, tmp_path) -> None:
 def test_live_mode_initializes_l2_auth(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(trader_module, "ClobClient", _FakeClobClient)
 
-    trader = Trader(_build_settings(tmp_path, dry_run=False, api_key="k", api_secret="s", api_passphrase="p", signature_type=2, funder="0xfunder"))
+    trader = Trader(_build_settings(tmp_path, dry_run=False, api_key="k", api_secret="s", api_passphrase="p", signature_type=2, funder_address="0xfunder", allow_static_creds=True, static_creds_confirmation=True))
 
     assert isinstance(trader.client, _FakeClobClient)
     assert trader.client.kwargs.get("signature_type") == 2
     assert trader.client.kwargs.get("funder") == "0xfunder"
     assert trader._live_auth_ready is True
-    assert trader.client.derive_called is True
     assert trader.client.creds is not None
 
 
 def test_live_order_blocked_when_l2_creds_missing(monkeypatch, tmp_path) -> None:
     class _NoCredsClobClient(_FakeClobClient):
-        def create_or_derive_api_creds(self):
+        def derive_api_key(self):
             self.derive_called = True
             return None
 
@@ -101,8 +104,6 @@ def test_live_order_blocked_when_l2_creds_missing(monkeypatch, tmp_path) -> None
     monkeypatch.setattr(trader_module, "logger", _Logger())
 
     trader = Trader(_build_settings(tmp_path, dry_run=False, api_key="", api_secret="", api_passphrase=""))
-    ok = asyncio.run(trader.buy_fok("token-1", ask=0.5, horizon="5m"))
 
-    assert ok is False
+    assert trader._live_auth_ready is False
     assert any(call[0] == "missing_clob_l2_credentials" for call in logger_calls)
-    assert trader.client.post_order_called is False

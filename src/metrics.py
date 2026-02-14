@@ -53,6 +53,7 @@ ORACLE_SPOT_DIVERGENCE_PCT = Gauge(
 )
 FEED_LAG_SECONDS = Gauge("feed_lag_seconds", "Current feed lag in seconds", ["feed"])
 FEED_BLOCKED_STALE_PRICE = Gauge("feed_blocked_stale_price", "1 if stale price feed is currently blocking trading")
+BOT_API_CREDS_AGE_SECONDS = Gauge("bot_api_creds_age_seconds", "Age in seconds of active API credentials")
 
 
 def start_metrics_server(host: str, port: int) -> None:
