@@ -16,7 +16,18 @@ from config import Settings
 from execution.order_builder import OrderBuilder, configure_fee_rate_fetcher
 from markets.token_metadata_cache import TokenMetadataCache
 from auth.credentials import CredentialValidationError, init_client
-from metrics import BOT_API_CREDS_AGE_SECONDS, DAILY_REALIZED_PNL, RISK_LIMIT_BLOCKED, TRADES
+from metrics import (
+    BOT_API_CREDS_AGE_SECONDS,
+    DAILY_REALIZED_PNL,
+    MAX_DAILY_LOSS_PCT_CONFIGURED,
+    MAX_DAILY_LOSS_USD_CONFIGURED,
+    MAX_OPEN_EXPOSURE_PER_MARKET_PCT_CONFIGURED,
+    MAX_OPEN_EXPOSURE_PER_MARKET_USD_CONFIGURED,
+    MAX_TOTAL_OPEN_EXPOSURE_PCT_CONFIGURED,
+    MAX_TOTAL_OPEN_EXPOSURE_USD_CONFIGURED,
+    RISK_LIMIT_BLOCKED,
+    TRADES,
+)
 from utils.rounding import round_price_up_to_tick, round_size_to_step
 
 logger = structlog.get_logger(__name__)
@@ -802,7 +813,7 @@ class Trader:
         if self.client is None:
             raise RuntimeError("missing_clob_client")
 
-        if hasattr(self.client, "create_limit_order") and hasattr(self.client, "post_order"):
+        if hasattr(self.client, "create_order") and hasattr(self.client, "post_order"):
             self.order_builder.clob_client = self.client
             limit_order, used_fallback, fee_rate_bps = self.order_builder.build_signed_order(
                 token_id=token_id,
@@ -814,10 +825,7 @@ class Trader:
             if used_fallback and bool(getattr(self.settings, "enable_fee_rate", True)):
                 raise RuntimeError("fee_rate_unavailable_monitor_only")
             logger.info("order_fee_rate", token_id=token_id, fee_rate_bps=fee_rate_bps)
-            try:
-                return self.client.post_order(limit_order, time_in_force="FOK")
-            except TypeError:
-                return self.client.post_order(limit_order)
+            return self.client.post_order(limit_order, orderType="FOK")
 
         raise RuntimeError("unsupported_order_submission_api")
 

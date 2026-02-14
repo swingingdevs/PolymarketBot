@@ -81,6 +81,19 @@ RECOVERY_STABILIZATION_ACTIVE = Gauge(
     "bot_recovery_stabilization_active",
     "1 while waiting for RTDS freshness stabilization before live trading resumes",
 )
+BOT_FEE_FETCH_FAILURES_TOTAL = Counter(
+    "bot_fee_fetch_failures_total",
+    "Number of fee-rate fetch failures",
+)
+BOT_FEE_RATE_BPS = Gauge(
+    "bot_fee_rate_bps",
+    "Latest effective fee rate bps used for token",
+    ["token_id"],
+)
+BOT_API_CREDS_AGE_SECONDS = Gauge(
+    "bot_api_creds_age_seconds",
+    "Age of current L2 API credentials in seconds",
+)
 
 
 def start_metrics_server(host: str, port: int) -> None:

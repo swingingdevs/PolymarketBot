@@ -26,11 +26,12 @@ class _FakeClient:
     def __init__(self) -> None:
         self.orders: list[dict[str, object]] = []
 
-    def create_limit_order(self, **kwargs):
-        if "feeRateBps" not in kwargs:
-            raise RuntimeError("rejected_missing_feeRateBps")
-        self.orders.append(kwargs)
-        return kwargs
+    def create_order(self, order_args):
+        payload = dict(order_args.__dict__)
+        if "fee_rate_bps" not in payload:
+            raise RuntimeError("rejected_missing_fee_rate_bps")
+        self.orders.append(payload)
+        return payload
 
 
 def _seed(sm: StrategyStateMachine, t0: int) -> None:
@@ -67,7 +68,7 @@ def test_order_builder_includes_fee_rate_in_payload() -> None:
 
     assert used_fallback is False
     assert fee_rate_bps == 33
-    assert payload["feeRateBps"] == 33
+    assert payload["fee_rate_bps"] == 33
 
 
 def test_ev_after_fees_blocks_trade_when_negative() -> None:
