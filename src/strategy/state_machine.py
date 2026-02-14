@@ -53,6 +53,8 @@ class StrategyStateMachine:
         d_min: float,
         max_entry_price: float,
         fee_bps: float,
+        expected_notional_usd: float = 1.0,
+        depth_penalty_coeff: float = 1.0,
         price_stale_after_seconds: float = 2.0,
         probability_calibrator: ProbabilityCalibrator | None = None,
         calibration_input: CalibrationInput = "p_hat",
@@ -66,6 +68,8 @@ class StrategyStateMachine:
         self.d_min = d_min
         self.max_entry_price = max_entry_price
         self.fee_bps = fee_bps
+        self.expected_notional_usd = max(0.0, expected_notional_usd)
+        self.depth_penalty_coeff = max(0.0, depth_penalty_coeff)
         self.price_stale_after_seconds = price_stale_after_seconds
         self.probability_calibrator = probability_calibrator or IdentityCalibrator()
         self.calibration_input = calibration_input
@@ -314,15 +318,17 @@ class StrategyStateMachine:
             fee_cost = fee_cost_per_share_quote_equivalent(base_rate_bps=fee_bps, price=ask, side="BUY")
         spread = max(0.0, ask - bid) if bid is not None else 0.0
         spread_penalty = 0.5 * spread
-        desired_size = expected_size if expected_size is not None else (self.expected_notional_usd / ask)
-        desired_size = max(0.0, desired_size)
+        required_shares = expected_size if expected_size is not None else (self.expected_notional_usd / ask)
+        required_shares = max(0.0, required_shares)
         depth_penalty = 0.0
-        if ask_size is not None:
-            shortfall = max(0.0, desired_size - ask_size) / max(desired_size, 1e-9)
+        if ask_size is not None and ask_size < required_shares:
+            shortfall = (required_shares - ask_size) / max(required_shares, 1e-9)
             depth_penalty = shortfall * spread * self.depth_penalty_coeff
         slippage_cost = spread_penalty + depth_penalty
 
         effective_fill_prob = 1.0 if fill_prob is None else min(1.0, max(0.0, fill_prob))
+        if ask_size is not None and ask_size < required_shares:
+            effective_fill_prob = 0.0
         ev_exec = p_hat - ask - fee_cost - slippage_cost
         ev = ev_exec * effective_fill_prob
         return Candidate(
