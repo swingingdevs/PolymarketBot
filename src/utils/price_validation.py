@@ -16,14 +16,18 @@ def validate_price_source(price_data: dict[str, object]) -> bool:
 
 
 def compare_feeds(chainlink_price: float, binance_price: float) -> float:
-    """Log and return absolute price delta; warn when gap is meaningful."""
+    """Log and return percent divergence between feeds."""
     delta = abs(chainlink_price - binance_price)
-    if delta > 20:
+    reference = max(abs(binance_price), 1e-9)
+    divergence_pct = (delta / reference) * 100.0
+
+    if divergence_pct > 0.5:
         logger.warning(
             "feed_divergence_detected",
             chainlink_price=chainlink_price,
             binance_price=binance_price,
             abs_diff=delta,
+            divergence_pct=divergence_pct,
         )
     else:
         logger.info(
@@ -31,8 +35,9 @@ def compare_feeds(chainlink_price: float, binance_price: float) -> float:
             chainlink_price=chainlink_price,
             binance_price=binance_price,
             abs_diff=delta,
+            divergence_pct=divergence_pct,
         )
-    return delta
+    return divergence_pct
 
 
 def is_price_stale(timestamp: float, stale_after_seconds: float = 2.0) -> bool:

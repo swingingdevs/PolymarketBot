@@ -23,10 +23,19 @@ except Exception:  # pragma: no cover
         return None
 
 WATCH_EVENTS = Counter("bot_watch_events_total", "Number of watch triggers")
+WATCH_TRIGGERED = Counter("bot_watch_triggered_total", "Number of watch mode trigger events")
+HAMMER_ATTEMPTED = Counter("bot_hammer_attempted_total", "Number of hammer order attempts")
+HAMMER_FILLED = Counter("bot_hammer_filled_total", "Number of hammer order fills")
+REJECTED_MAX_ENTRY_PRICE = Counter(
+    "bot_rejected_max_entry_price_total",
+    "Number of candidates rejected due to max entry price guardrail",
+)
+STALE_FEED = Counter("bot_stale_feed_total", "Number of stale feed/staleness events detected")
 TRADES = Counter("bot_trades_total", "Trades placed", ["status", "side", "horizon"])
 CURRENT_EV = Gauge("bot_current_best_ev", "Best EV at decision point")
 DAILY_REALIZED_PNL = Gauge("bot_daily_realized_pnl_usd", "Daily realized PnL in USD")
 RISK_LIMIT_BLOCKED = Gauge("bot_risk_limit_blocked", "1 if trading is blocked by risk limits")
+KILL_SWITCH_ACTIVE = Gauge("bot_kill_switch_active", "1 if divergence kill-switch is active")
 
 
 def start_metrics_server(host: str, port: int) -> None:

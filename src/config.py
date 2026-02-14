@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     rtds_topic: str = "crypto_prices_chainlink"
     log_price_comparison: bool = True
 
+    divergence_threshold_pct: float = 0.5
+    divergence_sustain_seconds: float = 5.0
+
     rtds_ping_interval: int = 30
     rtds_pong_timeout: int = 10
     rtds_reconnect_delay_min: int = 1
@@ -128,5 +131,9 @@ class Settings(BaseSettings):
             raise ValueError("Unsafe configuration: watch_return_threshold must be > 0")
         if self.d_min <= 0:
             raise ValueError("Unsafe configuration: d_min must be > 0")
+        if self.divergence_threshold_pct <= 0:
+            raise ValueError("Unsafe configuration: divergence_threshold_pct must be > 0")
+        if self.divergence_sustain_seconds <= 0:
+            raise ValueError("Unsafe configuration: divergence_sustain_seconds must be > 0")
 
         return self
