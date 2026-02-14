@@ -118,7 +118,7 @@ def test_clob_stale_detection_logs_warning_when_updates_stop(monkeypatch: pytest
         def __init__(self) -> None:
             self._sent_first = False
 
-        async def send(self, _payload: str) -> None:
+        async def send(self, _payload: str | bytes) -> None:
             return
 
         async def recv(self) -> str:

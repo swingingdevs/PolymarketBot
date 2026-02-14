@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
+import orjson
 from config import Settings
 from execution.trader import Trader
 from feeds.clob_ws import CLOBWebSocket
@@ -50,9 +51,9 @@ def test_clob_cache_updates_on_tick_size_change_event(monkeypatch) -> None:
                 '{"event_type":"book","asset_id":"token-a","bids":[{"price":"0.20","size":"1"}],"asks":[{"price":"0.21","size":"1"}],"timestamp":1712345678901}',
             ]
 
-        sent: list[str] = []
+        sent: list[str | bytes] = []
 
-        async def send(self, payload: str) -> None:
+        async def send(self, payload: str | bytes) -> None:
             self.sent.append(payload)
 
         async def recv(self) -> str:
@@ -88,7 +89,7 @@ def test_clob_cache_updates_on_tick_size_change_event(monkeypatch) -> None:
     constraints = clob.get_token_constraints("token-a")
     assert constraints is not None
     assert constraints.tick_size == 0.01
-    assert ws.sent[0] == "{\"assets_ids\": [\"token-a\"], \"type\": \"market\"}"
+    assert orjson.loads(ws.sent[0]) == {"assets_ids": ["token-a"], "type": "market"}
 
 
 def test_buy_fok_uses_metadata_min_size_when_clob_constraint_missing(tmp_path) -> None:
