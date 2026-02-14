@@ -51,6 +51,17 @@ def _build_settings(tmp_path, **overrides):
         "max_open_exposure_per_market": 500.0,
         "max_total_open_exposure": 5000.0,
         "exposure_reconcile_every_n_trades": 10,
+        "max_risk_pct_cap": 0.02,
+        "risk_pct_per_trade": 0.01,
+        "kelly_fraction": 0.25,
+        "equity_usd": 1000.0,
+        "equity_refresh_seconds": 30.0,
+        "cooldown_consecutive_losses": 3,
+        "cooldown_drawdown_pct": 0.05,
+        "cooldown_minutes": 15,
+        "fee_rate_ttl_seconds": 60.0,
+        "enable_fee_rate": True,
+        "default_fee_rate_bps": 12.0,
         "order_submit_timeout_seconds": 1.0,
     }
     base.update(overrides)
