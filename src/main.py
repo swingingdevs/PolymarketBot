@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 
 import structlog
@@ -51,16 +52,44 @@ async def orchestrate() -> None:
 
     market_state: dict[str, UpDownMarket] = {}
     token_ids: set[str] = set()
+    clob_resubscribe_event = asyncio.Event()
+    token_change_reason = "initial_bootstrap"
+    last_token_change_at = 0.0
+    clob_resubscribe_debounce_seconds = 2.0
+
+    async def wait_for_token_set_to_stabilize() -> None:
+        nonlocal last_token_change_at
+        while True:
+            observed_change_at = last_token_change_at
+            await asyncio.sleep(clob_resubscribe_debounce_seconds)
+            if observed_change_at == last_token_change_at:
+                return
 
     async def refresh_markets(now_ts: int) -> None:
-        nonlocal market_state, token_ids
+        nonlocal market_state, token_ids, token_change_reason, last_token_change_at
         s5 = floor_to_boundary(now_ts, 300)
         s15 = floor_to_boundary(now_ts, 900)
         m5 = await gamma.get_market(5, s5)
         m15 = await gamma.get_market(15, s15)
         pairs = [m5, m15]
         market_state = {m.slug: m for m in pairs}
-        token_ids = {m.up_token_id for m in pairs} | {m.down_token_id for m in pairs}
+        new_token_ids = {m.up_token_id for m in pairs} | {m.down_token_id for m in pairs}
+        if new_token_ids != token_ids:
+            added_tokens = sorted(new_token_ids - token_ids)
+            removed_tokens = sorted(token_ids - new_token_ids)
+            token_change_reason = f"refresh_markets_boundary_5m={s5}_15m={s15}"
+            last_token_change_at = time.monotonic()
+            logger.info(
+                "clob_token_set_changed",
+                reason=token_change_reason,
+                added_tokens=added_tokens,
+                removed_tokens=removed_tokens,
+                previous_token_count=len(token_ids),
+                new_token_count=len(new_token_ids),
+                debounce_seconds=clob_resubscribe_debounce_seconds,
+            )
+            token_ids = new_token_ids
+            clob_resubscribe_event.set()
 
     await refresh_markets(int(time.time()))
     clob = CLOBWebSocket(
@@ -107,12 +136,51 @@ async def orchestrate() -> None:
                         break
 
     async def consume_clob() -> None:
+        nonlocal token_change_reason
+        subscribe_reason = "initial_bootstrap"
         while True:
             if not token_ids:
                 await asyncio.sleep(1)
                 continue
-            async for top in clob.stream_books(list(token_ids)):
-                strategy.on_book(top.token_id, top.best_bid, top.best_ask)
+
+            subscribed_tokens = sorted(token_ids)
+            logger.info(
+                "clob_subscribe",
+                reason=subscribe_reason,
+                token_count=len(subscribed_tokens),
+                token_ids=subscribed_tokens,
+            )
+            stream = clob.stream_books(subscribed_tokens)
+            stream_iter = stream.__aiter__()
+            while True:
+                next_book_task = asyncio.create_task(stream_iter.__anext__())
+                resubscribe_task = asyncio.create_task(clob_resubscribe_event.wait())
+                done, pending = await asyncio.wait(
+                    {next_book_task, resubscribe_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+
+                if next_book_task in done:
+                    resubscribe_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await resubscribe_task
+                    top = next_book_task.result()
+                    strategy.on_book(top.token_id, top.best_bid, top.best_ask)
+                    continue
+
+                next_book_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await next_book_task
+                clob_resubscribe_event.clear()
+                await wait_for_token_set_to_stabilize()
+                subscribe_reason = token_change_reason
+                logger.info(
+                    "clob_resubscribe_triggered",
+                    reason=subscribe_reason,
+                    debounce_seconds=clob_resubscribe_debounce_seconds,
+                    token_count=len(token_ids),
+                )
+                break
 
     await asyncio.gather(consume_rtds(), consume_clob())
 
