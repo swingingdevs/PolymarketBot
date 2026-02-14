@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import time
 from collections import deque
 from dataclasses import dataclass, field
 
@@ -8,7 +9,7 @@ import structlog
 
 from markets.gamma_cache import UpDownMarket
 from markets.token_metadata_cache import TokenMetadataCache
-from metrics import CURRENT_EV, REJECTED_MAX_ENTRY_PRICE, STALE_FEED, WATCH_EVENTS, WATCH_TRIGGERED
+from metrics import CURRENT_EV, FEED_BLOCKED_STALE_PRICE, REJECTED_MAX_ENTRY_PRICE, STALE_FEED, WATCH_EVENTS, WATCH_TRIGGERED
 from strategy.calibration import CalibrationInput, IdentityCalibrator, ProbabilityCalibrator
 from utils.fees import fee_cost_per_share_quote_equivalent
 from utils.price_validation import is_price_stale, validate_price_source
@@ -131,6 +132,8 @@ class StrategyStateMachine:
         self.sigma1_stats = RollingStats()
         self.books: dict[str, BookSnapshot] = {}
         self.fill_stats: dict[str, FillProbStats] = {}
+        self.price_is_stale = False
+        FEED_BLOCKED_STALE_PRICE.set(0)
 
     def _estimate_fill_prob(self, token_id: str, ask: float | None, ts: float | None) -> float | None:
         if ask is None:
@@ -194,11 +197,19 @@ class StrategyStateMachine:
         if not validate_price_source(metadata):
             logger.warning("invalid_price_source", metadata=metadata)
             return
-        if is_price_stale(
-            float(metadata.get("timestamp", ts)), stale_after_seconds=self.price_stale_after_seconds
-        ):
-            logger.warning("stale_price_update", timestamp=metadata.get("timestamp", ts))
+        metadata_ts = float(metadata.get("timestamp", ts))
+        historical_replay = abs(time.time() - float(ts)) > (self.price_stale_after_seconds * 10)
+        stale_by_event_clock = (float(ts) - metadata_ts) > self.price_stale_after_seconds
+        stale_by_wall_clock_eval = is_price_stale(metadata_ts, stale_after_seconds=self.price_stale_after_seconds)
+        stale_by_wall_clock = False if historical_replay else stale_by_wall_clock_eval
+        if stale_by_event_clock or stale_by_wall_clock:
+            logger.warning("stale_price_update", timestamp=metadata_ts)
             STALE_FEED.inc()
+            self.price_is_stale = True
+            FEED_BLOCKED_STALE_PRICE.set(1)
+            return
+        self.price_is_stale = False
+        FEED_BLOCKED_STALE_PRICE.set(0)
 
         sec = int(ts)
 
@@ -275,6 +286,8 @@ class StrategyStateMachine:
                     trigger_by_zscore = z_score >= self.watch_zscore_threshold
 
         if trigger_by_return or trigger_by_zscore:
+            if self.price_is_stale:
+                return
             self._set_watch_mode(True, sec)
 
 
@@ -396,6 +409,8 @@ class StrategyStateMachine:
         markets: list[UpDownMarket],
         token_map: dict[str, str],
     ) -> Candidate | None:
+        if self.price_is_stale:
+            return None
         candidates: list[Candidate] = []
         for market in markets:
             if not self.in_hammer_window(now_ts, market.end_epoch):

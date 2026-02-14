@@ -213,3 +213,43 @@ def test_candidate_ev_fee_is_symmetric_at_complementary_prices() -> None:
     assert up_candidate is not None
     assert down_candidate is not None
     assert up_candidate.fee_cost == pytest.approx(down_candidate.fee_cost)
+
+
+def test_stale_price_blocks_watch_mode_entry() -> None:
+    sm = StrategyStateMachine(
+        0.005,
+        hammer_secs=15,
+        d_min=1.0,
+        max_entry_price=0.99,
+        fee_bps=0,
+        price_stale_after_seconds=2.0,
+    )
+
+    t0 = 1_710_000_000
+    sm.on_price(t0, 100.0, metadata={"source": "chainlink_rtds", "timestamp": t0})
+    sm.on_price(t0 + 10, 100.8, metadata={"source": "chainlink_rtds", "timestamp": t0})
+
+    assert sm.price_is_stale
+    assert not sm.watch_mode
+
+
+def test_stale_price_blocks_candidate_selection() -> None:
+    sm = StrategyStateMachine(
+        0.005,
+        hammer_secs=15,
+        d_min=1.0,
+        max_entry_price=0.99,
+        fee_bps=0,
+        price_stale_after_seconds=2.0,
+    )
+    t0 = 1_710_000_000
+    _seed_state(sm, t0)
+
+    market = UpDownMarket("m5", t0 - 285, t0 + 15, "u5", "d5", 5)
+    sm.on_book("u5", 0.3, 0.40, fill_prob=0.95, ask_size=3.0, ts=t0 + 1)
+    assert sm.pick_best(t0, [market], {}) is not None
+
+    sm.on_price(t0 + 20, 50100.0, metadata={"source": "chainlink_rtds", "timestamp": t0 + 1})
+
+    assert sm.price_is_stale
+    assert sm.pick_best(t0, [market], {}) is None
