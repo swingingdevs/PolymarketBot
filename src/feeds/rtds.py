@@ -43,6 +43,20 @@ class RTDSFeed:
         self.price_staleness_threshold = price_staleness_threshold
         self.log_price_comparison = log_price_comparison
 
+        normalized_symbol = self.symbol.lower()
+        encoded_filters = json.dumps({"symbol": normalized_symbol})
+        self._subscription_bytes_by_symbol: dict[str, bytes] = {
+            normalized_symbol: json.dumps(
+                {
+                    "action": "subscribe",
+                    "subscriptions": [
+                        {"topic": self.topic, "type": "*", "filters": encoded_filters},
+                        {"topic": self.spot_topic, "type": "*", "filters": encoded_filters},
+                    ],
+                }
+            ).encode()
+        }
+
         self._last_price_ts: float = 0.0
         self._latest_by_topic_symbol: dict[tuple[str, str], tuple[float, float]] = {}
 
