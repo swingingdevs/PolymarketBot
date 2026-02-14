@@ -54,6 +54,17 @@ class Settings(BaseSettings):
     rtds_spot_max_age_seconds: float = 2.0
     log_price_comparison: bool = True
 
+    coinbase_ws_feed_url: str = "wss://ws-feed.exchange.coinbase.com"
+    coinbase_ws_direct_url: str = ""
+    coinbase_ws_api_key: str = Field(default="", repr=False)
+    coinbase_ws_api_secret: str = Field(default="", repr=False)
+    coinbase_ws_api_passphrase: str = Field(default="", repr=False)
+    coinbase_product_id: str = "BTC-USD"
+
+    chainlink_max_lag_seconds: float = 5.0
+    spot_max_lag_seconds: float = 5.0
+    spot_quorum_min_sources: int = 2
+
     divergence_threshold_pct: float = 0.5
     divergence_sustain_seconds: float = 5.0
 
@@ -63,6 +74,7 @@ class Settings(BaseSettings):
     rtds_reconnect_delay_max: int = 60
     price_staleness_threshold: int = 10
     clob_book_staleness_threshold: int = 10
+    clob_book_depth_levels: int = 10
     chainlink_direct_api_url: str = "https://api.exchange.coinbase.com/products/BTC-USD/ticker"
     use_fallback_feed: bool = False
 
@@ -76,6 +88,7 @@ class Settings(BaseSettings):
     d_min: float = 5.0
     max_entry_price: float = 0.97
     fee_bps: float = 10.0
+    fee_formula_exponent: float = 1.0
 
     calibration_method: str = "none"
     calibration_input: str = "p_hat"
@@ -114,6 +127,9 @@ class Settings(BaseSettings):
     metrics_host: str = "0.0.0.0"
     metrics_port: int = 9102
     token_metadata_ttl_seconds: float = 300.0
+    recorder_enabled: bool = False
+    recorder_output_path: str = "artifacts/session_recording.jsonl"
+    recorder_queue_maxsize: int = 10000
 
     @model_validator(mode="after")
     def apply_profile_defaults(self) -> "Settings":
@@ -151,23 +167,11 @@ class Settings(BaseSettings):
             raise ValueError("Unsafe configuration: divergence_threshold_pct must be > 0")
         if self.divergence_sustain_seconds <= 0:
             raise ValueError("Unsafe configuration: divergence_sustain_seconds must be > 0")
-        if self.risk_pct_per_trade <= 0:
-            raise ValueError("Unsafe configuration: risk_pct_per_trade must be > 0")
-        if self.kelly_fraction < 0:
-            raise ValueError("Unsafe configuration: kelly_fraction must be >= 0")
-        if self.max_risk_pct_cap <= 0:
-            raise ValueError("Unsafe configuration: max_risk_pct_cap must be > 0")
-        if self.max_risk_pct_cap > 1:
-            raise ValueError("Unsafe configuration: max_risk_pct_cap must be <= 1")
-        if self.equity_usd <= 0:
-            raise ValueError("Unsafe configuration: equity_usd must be > 0")
-        if self.equity_refresh_seconds <= 0:
-            raise ValueError("Unsafe configuration: equity_refresh_seconds must be > 0")
-        if self.cooldown_consecutive_losses < 0:
-            raise ValueError("Unsafe configuration: cooldown_consecutive_losses must be >= 0")
-        if self.cooldown_drawdown_pct < 0:
-            raise ValueError("Unsafe configuration: cooldown_drawdown_pct must be >= 0")
-        if self.cooldown_minutes < 0:
-            raise ValueError("Unsafe configuration: cooldown_minutes must be >= 0")
+        if self.chainlink_max_lag_seconds <= 0:
+            raise ValueError("Unsafe configuration: chainlink_max_lag_seconds must be > 0")
+        if self.spot_max_lag_seconds <= 0:
+            raise ValueError("Unsafe configuration: spot_max_lag_seconds must be > 0")
+        if self.spot_quorum_min_sources < 2:
+            raise ValueError("Unsafe configuration: spot_quorum_min_sources must be >= 2")
 
         return self

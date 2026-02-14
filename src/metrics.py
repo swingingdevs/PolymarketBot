@@ -37,10 +37,16 @@ CLOB_DROPPED_MESSAGES = Counter(
     "Number of CLOB websocket payloads dropped during parsing",
     ["reason", "event_type"],
 )
+CLOB_PRICE_CHANGE_PARSED = Counter(
+    "clob_price_change_parsed_total",
+    "Number of CLOB price_change updates successfully parsed",
+    ["schema"],
+)
 CURRENT_EV = Gauge("bot_current_best_ev", "Best EV at decision point")
 DAILY_REALIZED_PNL = Gauge("bot_daily_realized_pnl_usd", "Daily realized PnL in USD")
 RISK_LIMIT_BLOCKED = Gauge("bot_risk_limit_blocked", "1 if trading is blocked by risk limits")
 KILL_SWITCH_ACTIVE = Gauge("bot_kill_switch_active", "1 if divergence kill-switch is active")
+FEED_BLOCKED_STALE_PRICE = Gauge("feed_blocked_stale_price", "1 if stale price feed is currently blocking trading")
 
 
 def start_metrics_server(host: str, port: int) -> None:

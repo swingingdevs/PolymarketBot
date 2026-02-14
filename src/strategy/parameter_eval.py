@@ -9,6 +9,7 @@ from pathlib import Path
 
 import orjson
 from markets.gamma_cache import UpDownMarket
+from strategy.replay_engine import ReplayEngine, load_recorded_events
 from strategy.state_machine import StrategyStateMachine
 
 
@@ -108,7 +109,9 @@ def replay_with_params(rows: list[ReplayRow], markets: list[UpDownMarket], param
 
     for row in rows:
         if row.event == "book" and row.token_id:
-            sm.on_book(row.token_id, row.bid, row.ask)
+            asks_levels = [(row.ask, 1_000_000.0)] if row.ask is not None else None
+            bids_levels = [(row.bid, 1_000_000.0)] if row.bid is not None else None
+            sm.on_book(row.token_id, row.bid, row.ask, ask_size=1_000_000.0 if row.ask is not None else None, bid_size=1_000_000.0 if row.bid is not None else None, asks_levels=asks_levels, bids_levels=bids_levels)
             continue
         if row.event != "price" or row.price is None:
             continue
@@ -202,9 +205,12 @@ def _parse_grid(grid_raw: str) -> dict[str, list[float]]:
 
 
 def sweep_parameter_grid(
-    rows: list[ReplayRow],
+    rows: list[ReplayRow] | None,
     markets: list[UpDownMarket],
     grid: dict[str, list[float]],
+    *,
+    replay_events: list[dict[str, object]] | None = None,
+    order_latency_ms: int = 150,
 ) -> tuple[list[dict[str, float | int]], dict[str, dict[str, float]]]:
     keys = ["watch_return_threshold", "hammer_secs", "d_min", "max_entry_price", "fee_bps"]
     combos = product(*(grid[k] for k in keys))
@@ -218,7 +224,25 @@ def sweep_parameter_grid(
             "max_entry_price": combo[3],
             "fee_bps": combo[4],
         }
-        result = replay_with_params(rows, markets, params)
+        if replay_events is None:
+            assert rows is not None
+            result = replay_with_params(rows, markets, params)
+        else:
+            engine = ReplayEngine(markets, order_latency_ms=order_latency_ms)
+            _trades, summary = engine.run(replay_events, params)
+            result = {
+                **params,
+                "closed_markets": len(markets),
+                "trades": summary.trade_count,
+                "win_rate": summary.win_rate,
+                "avg_ev_error": 0.0,
+                "max_drawdown": summary.max_drawdown,
+                "trade_frequency_per_hour": 0.0,
+                "total_pnl": summary.pnl,
+                "avg_fee": summary.avg_fee,
+                "avg_slippage": summary.avg_slippage,
+                "fok_fail_pct": summary.fok_fail_pct,
+            }
         report.append(result)
 
     ranked = sorted(
@@ -255,16 +279,31 @@ def export_report(report: list[dict[str, float | int]], robust_ranges: dict[str,
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Replay/backtest + parameter sweep for StrategyStateMachine")
-    parser.add_argument("--replay-csv", required=True, type=Path)
+    parser.add_argument("--replay-csv", type=Path, default=None)
     parser.add_argument("--markets-json", required=True, type=Path)
     parser.add_argument("--grid-json", required=True, help="JSON object with parameter arrays")
     parser.add_argument("--output-prefix", required=True, type=Path)
+    parser.add_argument("--recorded-session-jsonl", type=Path, default=None)
+    parser.add_argument("--order-latency-ms", type=int, default=150)
     args = parser.parse_args()
 
-    rows = load_replay_rows(args.replay_csv)
+    if args.recorded_session_jsonl is None and args.replay_csv is None:
+        raise SystemExit("--replay-csv is required unless --recorded-session-jsonl is provided")
+
     markets = load_markets(args.markets_json)
     grid = _parse_grid(args.grid_json)
-    report, robust_ranges = sweep_parameter_grid(rows, markets, grid)
+    if args.recorded_session_jsonl is not None:
+        events = load_recorded_events(args.recorded_session_jsonl)
+        report, robust_ranges = sweep_parameter_grid(
+            None,
+            markets,
+            grid,
+            replay_events=events,
+            order_latency_ms=args.order_latency_ms,
+        )
+    else:
+        rows = load_replay_rows(args.replay_csv)
+        report, robust_ranges = sweep_parameter_grid(rows, markets, grid)
     export_report(report, robust_ranges, args.output_prefix)
 
 

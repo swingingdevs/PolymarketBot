@@ -11,7 +11,7 @@ import orjson
 import structlog
 import websockets
 
-from metrics import CLOB_DROPPED_MESSAGES
+from metrics import CLOB_DROPPED_MESSAGES, CLOB_PRICE_CHANGE_PARSED
 from utils.time import normalize_ts
 
 logger = structlog.get_logger(__name__)
@@ -26,6 +26,8 @@ class BookTop:
     best_bid_size: float | None = None
     best_ask_size: float | None = None
     fill_prob: float | None = None
+    bids_levels: list[tuple[float, float]] | None = None
+    asks_levels: list[tuple[float, float]] | None = None
 
 
 @dataclass(slots=True)
@@ -45,6 +47,7 @@ class CLOBWebSocket:
         reconnect_delay_max: int = 60,
         book_staleness_threshold: float = 10,
         stale_after_seconds: float | None = None,
+        book_depth_levels: int = 10,
     ) -> None:
         self.ws_base = ws_base.rstrip("/")
         self.ws_url = self._build_ws_url(self.ws_base)
@@ -53,11 +56,13 @@ class CLOBWebSocket:
         self.reconnect_delay_min = reconnect_delay_min
         self.reconnect_delay_max = reconnect_delay_max
         self.book_staleness_threshold = float(stale_after_seconds) if stale_after_seconds is not None else float(book_staleness_threshold)
+        self.book_depth_levels = max(1, int(book_depth_levels))
         self.token_metadata_cache: dict[str, TokenConstraints] = {}
         self._ws: websockets.WebSocketClientProtocol | None = None
         self._subscribed_token_ids: set[str] = set()
         self._subscription_cache_token_ids: frozenset[str] | None = None
         self._subscription_cache_payload: bytes | None = None
+        self._book_tops: dict[str, BookTop] = {}
 
     @staticmethod
     def _build_ws_url(ws_base: str) -> str:
@@ -145,6 +150,32 @@ class CLOBWebSocket:
 
 
     @staticmethod
+    def _parse_levels(levels: object, *, max_levels: int) -> list[tuple[float, float]]:
+        if not isinstance(levels, list):
+            return []
+
+        parsed_levels: list[tuple[float, float]] = []
+        for raw in levels:
+            if isinstance(raw, (list, tuple)) and len(raw) >= 2:
+                raw_price, raw_size = raw[0], raw[1]
+            elif isinstance(raw, dict):
+                raw_price, raw_size = raw.get("price"), raw.get("size")
+            else:
+                continue
+
+            try:
+                price = float(raw_price)
+                size = float(raw_size)
+            except (TypeError, ValueError):
+                continue
+            if price <= 0 or size <= 0:
+                continue
+            parsed_levels.append((price, size))
+            if len(parsed_levels) >= max_levels:
+                break
+        return parsed_levels
+
+    @staticmethod
     def _extract_price_size(levels: object) -> tuple[float | None, float | None]:
         if isinstance(levels, dict):
             try:
@@ -192,6 +223,51 @@ class CLOBWebSocket:
             asks = source.get("sells") if isinstance(source, dict) else None
         return bids, asks
 
+    def _record_book_top(
+        self,
+        token_id: str,
+        *,
+        bid: float | None,
+        ask: float | None,
+        bid_size: float | None,
+        ask_size: float | None,
+        ts: float,
+    ) -> BookTop:
+        prev = self._book_tops.get(token_id)
+        top = BookTop(
+            token_id=token_id,
+            best_bid=bid if bid is not None else (prev.best_bid if prev is not None else None),
+            best_ask=ask if ask is not None else (prev.best_ask if prev is not None else None),
+            best_bid_size=bid_size if bid_size is not None else (prev.best_bid_size if prev is not None else None),
+            best_ask_size=ask_size if ask_size is not None else (prev.best_ask_size if prev is not None else None),
+            ts=ts,
+        )
+        self._book_tops[token_id] = top
+        return top
+
+    def _apply_legacy_level_update(
+        self,
+        token_id: str,
+        *,
+        side: object,
+        price: object,
+        size: object,
+        ts: float,
+    ) -> BookTop | None:
+        touched_price = self._coerce_positive_float(price)
+        if touched_price is None:
+            return None
+
+        parsed_size = self._coerce_positive_float(size)
+        normalized_side = str(side or "").strip().lower()
+        if normalized_side in {"buy", "bid"}:
+            bid = touched_price if parsed_size is None or parsed_size > 0 else None
+            return self._record_book_top(token_id, bid=bid, ask=None, bid_size=parsed_size, ask_size=None, ts=ts)
+        if normalized_side in {"sell", "ask"}:
+            ask = touched_price if parsed_size is None or parsed_size > 0 else None
+            return self._record_book_top(token_id, bid=None, ask=ask, bid_size=None, ask_size=parsed_size, ts=ts)
+        return None
+
     def _parse_event(self, event: dict[str, object], last_update: list[float]) -> list[BookTop]:
         tops: list[BookTop] = []
         event_type = self._event_type(event)
@@ -203,6 +279,8 @@ class CLOBWebSocket:
 
         if event_type in {"book", "snapshot", "book_snapshot", "price_snapshot"}:
             bids, asks = self._extract_book_levels(event)
+            bids_levels = self._parse_levels(bids, max_levels=self.book_depth_levels)
+            asks_levels = self._parse_levels(asks, max_levels=self.book_depth_levels)
             bid, bid_size = self._extract_price_size(bids)
             ask, ask_size = self._extract_price_size(asks)
             if bid is None and ask is None:
@@ -213,20 +291,46 @@ class CLOBWebSocket:
                 fill_prob = float(fill_prob)
             ts = normalize_ts(event.get("timestamp", time.time()))
             last_update[0] = time.time()
-            tops.append(
-                BookTop(
-                    token_id=token_id,
-                    best_bid=bid,
-                    best_ask=ask,
-                    best_bid_size=bid_size,
-                    best_ask_size=ask_size,
-                    fill_prob=fill_prob,
-                    ts=ts,
-                )
-            )
+            top = self._record_book_top(token_id, bid=bid, ask=ask, bid_size=bid_size, ask_size=ask_size, ts=ts)
+            top.fill_prob = fill_prob
+            tops.append(top)
             return tops
 
         if event_type in {"price_change", "update", "book_update", "price_update"}:
+            price_changes = event.get("price_changes")
+            if isinstance(price_changes, dict):
+                price_changes = [price_changes]
+            if isinstance(price_changes, list):
+                outer_ts = event.get("timestamp", time.time())
+                for change in price_changes:
+                    if not isinstance(change, dict):
+                        self._drop_message("change_not_object", event_type=event_type, event=event)
+                        continue
+
+                    change_token = str(change.get("asset_id") or change.get("token_id") or token_id)
+                    if not change_token:
+                        self._drop_message("change_missing_token", event_type=event_type, event=change)
+                        continue
+
+                    bid = self._coerce_positive_float(change.get("best_bid"))
+                    ask = self._coerce_positive_float(change.get("best_ask"))
+                    bid_size = self._coerce_positive_float(change.get("best_bid_size"))
+                    ask_size = self._coerce_positive_float(change.get("best_ask_size"))
+                    ts = normalize_ts(change.get("timestamp", outer_ts))
+                    tops.append(
+                        self._record_book_top(
+                            change_token,
+                            bid=bid,
+                            ask=ask,
+                            bid_size=bid_size,
+                            ask_size=ask_size,
+                            ts=ts,
+                        )
+                    )
+                    CLOB_PRICE_CHANGE_PARSED.labels(schema="new").inc()
+                    last_update[0] = time.time()
+                return tops
+
             changes = event.get("changes")
             if isinstance(changes, dict):
                 changes = [changes]
@@ -248,24 +352,38 @@ class CLOBWebSocket:
                 bid_size = self._coerce_positive_float(change.get("best_bid_size"))
                 ask_size = self._coerce_positive_float(change.get("best_ask_size"))
 
+                change_bids_levels: list[tuple[float, float]] | None = None
+                change_asks_levels: list[tuple[float, float]] | None = None
                 if bid is None and ask is None:
                     change_bids, change_asks = self._extract_book_levels(change)
+                    change_bids_levels = self._parse_levels(change_bids, max_levels=self.book_depth_levels)
+                    change_asks_levels = self._parse_levels(change_asks, max_levels=self.book_depth_levels)
                     bid, bid_size = self._extract_price_size(change_bids)
                     ask, ask_size = self._extract_price_size(change_asks)
 
-                if bid is None and ask is None:
-                    self._drop_message("update_missing_top_of_book", event_type=event_type, event=change)
-                    continue
-
                 ts = normalize_ts(change.get("timestamp", outer_ts))
                 last_update[0] = time.time()
+                CLOB_PRICE_CHANGE_PARSED.labels(schema="legacy").inc()
+
+                if bid is None and ask is None:
+                    top = self._apply_legacy_level_update(
+                        change_token,
+                        side=change.get("side"),
+                        price=change.get("price"),
+                        size=change.get("size"),
+                        ts=ts,
+                    )
+                    if top is not None:
+                        tops.append(top)
+                    continue
+
                 tops.append(
-                    BookTop(
-                        token_id=change_token,
-                        best_bid=bid,
-                        best_ask=ask,
-                        best_bid_size=bid_size,
-                        best_ask_size=ask_size,
+                    self._record_book_top(
+                        change_token,
+                        bid=bid,
+                        ask=ask,
+                        bid_size=bid_size,
+                        ask_size=ask_size,
                         ts=ts,
                     )
                 )

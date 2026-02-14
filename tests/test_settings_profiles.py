@@ -61,3 +61,8 @@ def test_price_stale_after_seconds_can_be_configured_from_env(monkeypatch: pytes
     monkeypatch.setenv("PRICE_STALE_AFTER_SECONDS", "9.25")
     settings = Settings()
     assert settings.price_stale_after_seconds == 9.25
+
+
+def test_spot_quorum_min_sources_must_be_at_least_two() -> None:
+    with pytest.raises(ValueError):
+        Settings(spot_quorum_min_sources=1)
