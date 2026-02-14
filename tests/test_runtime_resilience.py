@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from dataclasses import dataclass
+from datetime import date
 
 import pytest
 
 from config import Settings
 from execution.trader import Trader
+from feeds import clob_ws
 from feeds.clob_ws import BookTop, CLOBWebSocket
 from main import stream_clob_with_resubscribe, stream_prices_with_fallback
 
@@ -57,6 +59,10 @@ def test_rtds_staleness_triggers_fallback_then_recovers() -> None:
 def test_clob_stale_detection_logs_warning_when_updates_stop(monkeypatch: pytest.MonkeyPatch) -> None:
     warnings: list[dict[str, object]] = []
 
+    assert hasattr(clob_ws.websockets, "connect")
+    assert hasattr(CLOBWebSocket, "_heartbeat")
+    assert hasattr(clob_ws.logger, "warning")
+
     class FakeWS:
         def __init__(self) -> None:
             self._sent_first = False
@@ -64,15 +70,12 @@ def test_clob_stale_detection_logs_warning_when_updates_stop(monkeypatch: pytest
         async def send(self, _payload: str) -> None:
             return
 
-        def __aiter__(self):
-            return self
-
-        async def __anext__(self):
+        async def recv(self) -> str:
             if not self._sent_first:
                 self._sent_first = True
                 return '{"event_type":"book","asset_id":"token-a","bids":[["0.2","1"]],"asks":[["0.3","1"]],"timestamp":123}'
             await asyncio.sleep(3600)
-            raise StopAsyncIteration
+            return ""
 
     class FakeConnectCtx:
         async def __aenter__(self):
@@ -89,32 +92,41 @@ def test_clob_stale_detection_logs_warning_when_updates_stop(monkeypatch: pytest
     monkeypatch.setattr("feeds.clob_ws.logger.warning", lambda event, **kwargs: warnings.append({"event": event, **kwargs}))
 
     async def _run() -> None:
-        clob = CLOBWebSocket("wss://unused", stale_after_seconds=0.01)
+        clob = CLOBWebSocket("wss://unused", book_staleness_threshold=0.01)
         stream = clob.stream_books(["token-a"])
         first = await stream.__anext__()
         assert first.token_id == "token-a"
 
         task = asyncio.create_task(stream.__anext__())
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(1.1)
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
 
     asyncio.run(_run())
-    assert any(w["event"] == "clob_orderbook_stale" for w in warnings)
+    stale_warnings = [w for w in warnings if w["event"] == "clob_orderbook_stale"]
+    assert stale_warnings
+    assert any(
+        w.get("staleness_threshold_seconds") == 0.01 and w.get("token_ids") == ["token-a"] for w in stale_warnings
+    )
 
 
 @dataclass
 class _Now:
     hour: int
+    day: date
+
+    def date(self) -> date:
+        return self.day
 
 
 class _FakeDatetime:
     fixed_hour = 9
+    fixed_day = date(2026, 1, 1)
 
     @classmethod
     def now(cls, _tz):
-        return _Now(hour=cls.fixed_hour)
+        return _Now(hour=cls.fixed_hour, day=cls.fixed_day)
 
 
 def test_trader_risk_hourly_cap_and_daily_loss_lockout(monkeypatch: pytest.MonkeyPatch) -> None:
