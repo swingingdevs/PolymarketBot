@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -74,7 +75,7 @@ class Trader:
             logger.warning("risk_state_persist_failed", path=str(self._risk_state_path))
 
     def _today_utc(self) -> str:
-        return datetime.now(timezone.utc).date().isoformat()
+        return time.strftime("%Y-%m-%d", time.gmtime())
 
     def _reset_daily_pnl_if_needed(self) -> None:
         today_utc = self._today_utc()
