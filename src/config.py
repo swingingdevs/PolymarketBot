@@ -54,6 +54,17 @@ class Settings(BaseSettings):
     rtds_spot_max_age_seconds: float = 2.0
     log_price_comparison: bool = True
 
+    coinbase_ws_feed_url: str = "wss://ws-feed.exchange.coinbase.com"
+    coinbase_ws_direct_url: str = ""
+    coinbase_ws_api_key: str = Field(default="", repr=False)
+    coinbase_ws_api_secret: str = Field(default="", repr=False)
+    coinbase_ws_api_passphrase: str = Field(default="", repr=False)
+    coinbase_product_id: str = "BTC-USD"
+
+    chainlink_max_lag_seconds: float = 5.0
+    spot_max_lag_seconds: float = 5.0
+    spot_quorum_min_sources: int = 2
+
     divergence_threshold_pct: float = 0.5
     divergence_sustain_seconds: float = 5.0
 
@@ -146,5 +157,11 @@ class Settings(BaseSettings):
             raise ValueError("Unsafe configuration: divergence_threshold_pct must be > 0")
         if self.divergence_sustain_seconds <= 0:
             raise ValueError("Unsafe configuration: divergence_sustain_seconds must be > 0")
+        if self.chainlink_max_lag_seconds <= 0:
+            raise ValueError("Unsafe configuration: chainlink_max_lag_seconds must be > 0")
+        if self.spot_max_lag_seconds <= 0:
+            raise ValueError("Unsafe configuration: spot_max_lag_seconds must be > 0")
+        if self.spot_quorum_min_sources < 2:
+            raise ValueError("Unsafe configuration: spot_quorum_min_sources must be >= 2")
 
         return self
