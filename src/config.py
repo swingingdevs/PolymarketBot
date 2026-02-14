@@ -61,8 +61,8 @@ class Settings(BaseSettings):
     coinbase_ws_api_passphrase: str = Field(default="", repr=False)
     coinbase_product_id: str = "BTC-USD"
 
-    chainlink_max_lag_seconds: float = 5.0
-    spot_max_lag_seconds: float = 5.0
+    chainlink_max_lag_seconds: float = 2.5
+    spot_max_lag_seconds: float = 2.5
     spot_quorum_min_sources: int = 2
 
     divergence_threshold_pct: float = 0.5
