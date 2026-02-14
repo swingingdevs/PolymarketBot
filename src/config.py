@@ -98,6 +98,14 @@ class Settings(BaseSettings):
 
     dry_run: bool = True
     max_usd_per_trade: float = 50.0
+    risk_pct_per_trade: float = 0.01
+    kelly_fraction: float = 0.25
+    max_risk_pct_cap: float = 0.02
+    equity_usd: float = 1000.0
+    equity_refresh_seconds: float = 30.0
+    cooldown_consecutive_losses: int = 3
+    cooldown_drawdown_pct: float = 0.05
+    cooldown_minutes: int = 15
     max_daily_loss: float = 250.0
     max_trades_per_hour: int = 4
     max_open_exposure_per_market: float = 100.0

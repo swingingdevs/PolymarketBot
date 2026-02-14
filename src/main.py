@@ -372,6 +372,9 @@ async def orchestrate() -> None:
                 best.token_id,
                 best.ask,
                 str(best.market.horizon_minutes),
+                p_hat=best.p_hat,
+                fee_cost=best.fee_cost,
+                slippage_cost=best.slippage_cost,
                 market_slug=best.market.slug,
                 market_start_epoch=best.market.start_epoch,
             )

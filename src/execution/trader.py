@@ -38,6 +38,10 @@ class RiskState:
     open_exposure_usd_by_market: dict[str, float] | None = None
     total_open_notional_usd: float = 0.0
     trades_since_reconcile: int = 0
+    cumulative_realized_pnl: float = 0.0
+    consecutive_losses: int = 0
+    cooldown_until_ts: float = 0.0
+    peak_equity_usd: float = 0.0
 
     def __post_init__(self) -> None:
         if self.open_exposure_usd_by_market is None:
@@ -61,6 +65,12 @@ class Trader:
         self._reset_daily_pnl_if_needed()
         self._update_risk_metrics(risk_blocked=False)
         self._live_auth_ready = False
+        self._cached_equity_usd: float = max(0.0, float(settings.equity_usd))
+        self._last_equity_refresh_ts: float = 0.0
+
+        if self.risk.peak_equity_usd <= 0:
+            self.risk.peak_equity_usd = self._cached_equity_usd
+            self._persist_risk_state()
 
         if not settings.dry_run and ClobClient is not None:
             client_kwargs: dict[str, Any] = {
@@ -154,11 +164,119 @@ class Trader:
             open_exposure_usd_by_market=self._normalize_open_exposure(open_exposure),
             total_open_notional_usd=float(payload.get("total_open_notional_usd", 0.0)),
             trades_since_reconcile=int(payload.get("trades_since_reconcile", 0)),
+            cumulative_realized_pnl=float(payload.get("cumulative_realized_pnl", 0.0)),
+            consecutive_losses=int(payload.get("consecutive_losses", 0)),
+            cooldown_until_ts=float(payload.get("cooldown_until_ts", 0.0)),
+            peak_equity_usd=float(payload.get("peak_equity_usd", 0.0)),
         )
         if state.total_open_notional_usd <= 0 and state.open_exposure_usd_by_market:
             state.total_open_notional_usd = sum(state.open_exposure_usd_by_market.values())
         logger.info("risk_state_loaded", path=str(self._risk_state_path), risk_state=asdict(state))
         return state
+
+    @staticmethod
+    def _extract_first_float(payload: Any) -> float | None:
+        if isinstance(payload, (int, float)):
+            value = float(payload)
+            return value if math.isfinite(value) else None
+        if isinstance(payload, str):
+            try:
+                value = float(payload)
+            except ValueError:
+                return None
+            return value if math.isfinite(value) else None
+        if isinstance(payload, list):
+            for item in payload:
+                value = Trader._extract_first_float(item)
+                if value is not None:
+                    return value
+            return None
+        if isinstance(payload, dict):
+            preferred = (
+                "total",
+                "total_usd",
+                "equity",
+                "equity_usd",
+                "balance",
+                "balance_usd",
+                "available",
+                "available_balance",
+            )
+            for key in preferred:
+                if key in payload:
+                    value = Trader._extract_first_float(payload.get(key))
+                    if value is not None:
+                        return value
+            for value in payload.values():
+                parsed = Trader._extract_first_float(value)
+                if parsed is not None:
+                    return parsed
+        return None
+
+    def _query_exchange_equity_usd(self) -> float | None:
+        if self.client is None:
+            return None
+        for method_name in ("get_balance", "get_balances", "get_account", "get_account_balance", "get_collateral"):
+            method = getattr(self.client, method_name, None)
+            if method is None:
+                continue
+            try:
+                payload = method()
+            except Exception:
+                continue
+            parsed = self._extract_first_float(payload)
+            if parsed is not None and parsed > 0:
+                return parsed
+        return None
+
+    def _refresh_equity_cache(self, force: bool = False) -> float:
+        now = time.time()
+        if not force and (now - self._last_equity_refresh_ts) < self.settings.equity_refresh_seconds:
+            return self._cached_equity_usd
+
+        refreshed = self._query_exchange_equity_usd()
+        if refreshed is not None:
+            self._cached_equity_usd = refreshed
+            self._last_equity_refresh_ts = now
+            return self._cached_equity_usd
+
+        self._last_equity_refresh_ts = now
+        self._cached_equity_usd = max(0.0, self.settings.equity_usd + self.risk.cumulative_realized_pnl)
+        return self._cached_equity_usd
+
+    def _cooldown_active(self) -> bool:
+        return time.time() < self.risk.cooldown_until_ts
+
+    def _maybe_start_cooldown(self) -> None:
+        if self.settings.cooldown_minutes <= 0:
+            return
+
+        equity_usd = self._refresh_equity_cache(force=True)
+        if equity_usd > self.risk.peak_equity_usd:
+            self.risk.peak_equity_usd = equity_usd
+
+        peak = max(self.risk.peak_equity_usd, 1e-9)
+        drawdown_pct = max(0.0, (peak - equity_usd) / peak)
+        triggered_by_losses = (
+            self.settings.cooldown_consecutive_losses > 0
+            and self.risk.consecutive_losses >= self.settings.cooldown_consecutive_losses
+        )
+        triggered_by_drawdown = (
+            self.settings.cooldown_drawdown_pct > 0
+            and drawdown_pct >= self.settings.cooldown_drawdown_pct
+        )
+
+        if not (triggered_by_losses or triggered_by_drawdown):
+            return
+        cooldown_until = time.time() + (self.settings.cooldown_minutes * 60)
+        if cooldown_until > self.risk.cooldown_until_ts:
+            self.risk.cooldown_until_ts = cooldown_until
+            logger.warning(
+                "risk_cooldown_activated",
+                consecutive_losses=self.risk.consecutive_losses,
+                drawdown_pct=drawdown_pct,
+                cooldown_minutes=self.settings.cooldown_minutes,
+            )
 
     def _normalize_open_exposure(self, raw: Any) -> dict[str, float]:
         if not isinstance(raw, dict):
@@ -315,6 +433,8 @@ class Trader:
             return True
         if self.risk.daily_realized_pnl <= -abs(self.settings.max_daily_loss):
             return True
+        if self._cooldown_active():
+            return True
         if self.risk.trades_this_hour >= self.settings.max_trades_per_hour:
             return True
         market_key = self._market_exposure_key(
@@ -346,6 +466,7 @@ class Trader:
         market_start_epoch: int | None = None,
     ) -> bool:
         self._reset_daily_pnl_if_needed()
+        self._refresh_equity_cache()
         cleaned = self._cleanup_expired_exposure()
         now_hour = datetime.now(timezone.utc).hour
         if now_hour != self.risk.last_trade_hour:
@@ -535,6 +656,11 @@ class Trader:
         realized_pnl = self._extract_realized_pnl(resp)
         if realized_pnl:
             self.risk.daily_realized_pnl += realized_pnl
+            self.risk.cumulative_realized_pnl += realized_pnl
+            if realized_pnl < 0:
+                self.risk.consecutive_losses += 1
+            elif realized_pnl > 0:
+                self.risk.consecutive_losses = 0
 
         filled_notional, complete_fill_details = self._extract_fill_notional(resp)
         applied_notional = filled_notional if filled_notional > 0 else fallback_notional_usd
@@ -548,6 +674,7 @@ class Trader:
         )
         self._maybe_reconcile_exposure_from_exchange(force=not complete_fill_details)
         self._cleanup_expired_exposure()
+        self._maybe_start_cooldown()
 
         self._persist_risk_state()
         self._update_risk_metrics(
@@ -624,6 +751,9 @@ class Trader:
         token_id: str,
         ask: float,
         horizon: str,
+        p_hat: float | None = None,
+        fee_cost: float = 0.0,
+        slippage_cost: float = 0.0,
         *,
         market_slug: str | None = None,
         market_start_epoch: int | None = None,
@@ -639,7 +769,20 @@ class Trader:
         min_order_size = min_order_size or 0.1
         size_step = min_order_size
 
-        size = self.settings.quote_size_usd / ask
+        effective_cost = min(0.999, max(1e-6, ask + fee_cost + slippage_cost))
+        if p_hat is None:
+            kelly_suggested = 0.0
+        else:
+            kelly_suggested = max(0.0, min(1.0, (float(p_hat) - effective_cost) / max(1e-9, 1.0 - effective_cost)))
+
+        dynamic_risk_pct = min(
+            self.settings.max_risk_pct_cap,
+            max(self.settings.risk_pct_per_trade, kelly_suggested * self.settings.kelly_fraction),
+        )
+        equity_usd = self._refresh_equity_cache()
+        quote_size_usd = min(self.settings.max_usd_per_trade, equity_usd * dynamic_risk_pct)
+
+        size = quote_size_usd / ask
         size = round_size_to_step(size, size_step)
         px = round_price_up_to_tick(ask, tick_size)
 
@@ -662,6 +805,8 @@ class Trader:
                     computed_size=size,
                     adjusted_size=adjusted_size,
                     adjusted_notional=adjusted_notional,
+                    equity_usd=equity_usd,
+                    dynamic_risk_pct=dynamic_risk_pct,
                 )
                 TRADES.labels(status="rejected_min_size", side="buy", horizon=horizon).inc()
                 return False
@@ -673,6 +818,7 @@ class Trader:
                 original_size=size,
                 adjusted_size=adjusted_size,
                 min_order_size=min_order_size,
+                quote_size_usd=quote_size_usd,
             )
             size = adjusted_size
 
@@ -704,12 +850,24 @@ class Trader:
                     0.0,
                 ),
                 total_open_notional_usd=self.risk.total_open_notional_usd,
+                cooldown_until_ts=self.risk.cooldown_until_ts,
+                equity_usd=equity_usd,
+                dynamic_risk_pct=dynamic_risk_pct,
             )
             TRADES.labels(status="rejected", side="buy", horizon=horizon).inc()
             return False
 
         if self.settings.dry_run:
-            logger.info("dry_run_order", token_id=token_id, ask=px, size=size)
+            logger.info(
+                "dry_run_order",
+                token_id=token_id,
+                ask=px,
+                size=size,
+                quote_size_usd=quote_size_usd,
+                equity_usd=equity_usd,
+                dynamic_risk_pct=dynamic_risk_pct,
+                kelly_suggested=kelly_suggested,
+            )
             self.risk.trades_this_hour += 1
             self._record_post_trade_updates(
                 {"fills": [{"price": px, "size": size}]},

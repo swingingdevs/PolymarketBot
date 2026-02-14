@@ -139,3 +139,86 @@ def test_exposure_rollover_cleanup_removes_expired_market_entries(tmp_path):
     assert allowed is True
     assert trader.risk.open_exposure_usd_by_market == {f"token-active|15m|BUY|start:{active_start}": 20.0}
     assert trader.risk.total_open_notional_usd == 20.0
+
+
+def test_dynamic_quote_size_scales_with_equity(tmp_path):
+    settings = Settings(
+        dry_run=True,
+        risk_state_path=str(tmp_path / "risk_state.json"),
+        equity_usd=1_000.0,
+        risk_pct_per_trade=0.01,
+        kelly_fraction=0.25,
+        max_risk_pct_cap=0.02,
+        max_usd_per_trade=100.0,
+    )
+    trader = Trader(settings)
+
+    quote_without_edge = min(
+        settings.max_usd_per_trade,
+        trader._refresh_equity_cache() * min(settings.max_risk_pct_cap, settings.risk_pct_per_trade),
+    )
+    assert quote_without_edge == 10.0
+
+    trader.risk.cumulative_realized_pnl = -500.0
+    quote_after_loss = min(
+        settings.max_usd_per_trade,
+        trader._refresh_equity_cache(force=True) * min(settings.max_risk_pct_cap, settings.risk_pct_per_trade),
+    )
+    assert quote_after_loss == 5.0
+
+
+def test_kelly_fraction_is_capped_by_hard_risk_limit(tmp_path):
+    settings = Settings(
+        dry_run=True,
+        risk_state_path=str(tmp_path / "risk_state.json"),
+        equity_usd=2_000.0,
+        risk_pct_per_trade=0.01,
+        kelly_fraction=0.25,
+        max_risk_pct_cap=0.02,
+        max_usd_per_trade=100.0,
+    )
+    trader = Trader(settings)
+
+    p_hat = 0.95
+    effective_cost = 0.40
+    kelly_suggested = max(0.0, min(1.0, (p_hat - effective_cost) / (1.0 - effective_cost)))
+    dynamic_risk_pct = min(
+        settings.max_risk_pct_cap,
+        max(settings.risk_pct_per_trade, kelly_suggested * settings.kelly_fraction),
+    )
+
+    assert kelly_suggested > 0.8
+    assert dynamic_risk_pct == settings.max_risk_pct_cap
+    assert min(settings.max_usd_per_trade, trader._refresh_equity_cache() * dynamic_risk_pct) == 40.0
+
+
+def test_cooldown_blocks_risk_checks_after_consecutive_losses(tmp_path):
+    settings = Settings(
+        dry_run=True,
+        risk_state_path=str(tmp_path / "risk_state.json"),
+        cooldown_consecutive_losses=2,
+        cooldown_drawdown_pct=0.50,
+        cooldown_minutes=10,
+        max_usd_per_trade=100.0,
+    )
+    trader = Trader(settings)
+
+    trader._record_post_trade_updates(
+        {"realized_pnl": -1.0, "fills": [{"price": 0.5, "size": 10}]},
+        token_id="token-a",
+        horizon="5m",
+        direction="BUY",
+        fallback_notional_usd=5.0,
+    )
+    assert trader._check_risk(5.0, token_id="token-b", horizon="5m", direction="BUY") is True
+
+    trader._record_post_trade_updates(
+        {"realized_pnl": -1.0, "fills": [{"price": 0.5, "size": 10}]},
+        token_id="token-a",
+        horizon="5m",
+        direction="BUY",
+        fallback_notional_usd=5.0,
+    )
+
+    assert trader.risk.cooldown_until_ts > 0
+    assert trader._check_risk(5.0, token_id="token-c", horizon="5m", direction="BUY") is False

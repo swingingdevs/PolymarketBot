@@ -31,6 +31,9 @@ def test_order_accepted_when_adjusted_to_min_size_within_risk_limits(tmp_path) -
         dry_run=True,
         quote_size_usd=0.2,
         max_usd_per_trade=5.0,
+        equity_usd=20.0,
+        risk_pct_per_trade=0.01,
+        max_risk_pct_cap=0.02,
         risk_state_path=str(tmp_path / "risk_state.json"),
     )
     trader = Trader(settings)
@@ -97,6 +100,9 @@ def test_buy_fok_uses_default_min_size_when_clob_constraint_missing(tmp_path) ->
         dry_run=True,
         quote_size_usd=0.2,
         max_usd_per_trade=5.0,
+        equity_usd=20.0,
+        risk_pct_per_trade=0.01,
+        max_risk_pct_cap=0.02,
         risk_state_path=str(tmp_path / "risk_state.json"),
     )
     cache = TokenMetadataCache()
@@ -115,6 +121,9 @@ def test_buy_fok_prefers_clob_min_size_over_metadata(tmp_path) -> None:
         dry_run=True,
         quote_size_usd=0.2,
         max_usd_per_trade=5.0,
+        equity_usd=20.0,
+        risk_pct_per_trade=0.01,
+        max_risk_pct_cap=0.02,
         risk_state_path=str(tmp_path / "risk_state.json"),
     )
     cache = TokenMetadataCache()
@@ -134,6 +143,9 @@ def test_buy_fok_allows_missing_min_size_metadata(tmp_path) -> None:
         dry_run=True,
         quote_size_usd=0.2,
         max_usd_per_trade=5.0,
+        equity_usd=20.0,
+        risk_pct_per_trade=0.01,
+        max_risk_pct_cap=0.02,
         risk_state_path=str(tmp_path / "risk_state.json"),
     )
     cache = TokenMetadataCache()
