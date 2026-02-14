@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     settings_profile: str = "live"
 
     watch_return_threshold: float = 0.005
+    settings_profile: str = "paper"
     watch_rolling_window_seconds: int = 60
     watch_zscore_threshold: float = 0.0
     watch_mode_expiry_seconds: int = 60
@@ -93,6 +94,7 @@ class Settings(BaseSettings):
     metrics_host: str = "0.0.0.0"
     metrics_port: int = 9102
     token_metadata_ttl_seconds: float = 300.0
+    settings_profile: str = "paper"
 
     @model_validator(mode="after")
     def apply_profile_defaults(self) -> "Settings":
@@ -100,18 +102,18 @@ class Settings(BaseSettings):
         if profile not in PROFILE_DEFAULTS:
             allowed = ", ".join(sorted(PROFILE_DEFAULTS.keys()))
             raise ValueError(f"Unknown settings_profile={self.settings_profile}. Allowed: {allowed}")
+        self.settings_profile = profile
 
         defaults = PROFILE_DEFAULTS[profile]
-        fields_set = self.__pydantic_fields_set__
-        if "watch_return_threshold" not in fields_set:
+        if "watch_return_threshold" not in self.model_fields_set:
             self.watch_return_threshold = float(defaults["watch_return_threshold"])
-        if "hammer_secs" not in fields_set:
+        if "hammer_secs" not in self.model_fields_set:
             self.hammer_secs = int(defaults["hammer_secs"])
-        if "d_min" not in fields_set:
+        if "d_min" not in self.model_fields_set:
             self.d_min = float(defaults["d_min"])
-        if "max_entry_price" not in fields_set:
+        if "max_entry_price" not in self.model_fields_set:
             self.max_entry_price = float(defaults["max_entry_price"])
-        if "fee_bps" not in fields_set:
+        if "fee_bps" not in self.model_fields_set:
             self.fee_bps = float(defaults["fee_bps"])
 
         if self.max_entry_price > 0.99:

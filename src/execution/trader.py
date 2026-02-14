@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import asyncio
+import math
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -13,15 +14,17 @@ import structlog
 from config import Settings
 from markets.token_metadata_cache import TokenMetadataCache
 from metrics import DAILY_REALIZED_PNL, RISK_LIMIT_BLOCKED, TRADES
-from utils.rounding import round_price_to_tick, round_size_to_step
+from utils.rounding import round_size_to_step
 
 logger = structlog.get_logger(__name__)
 
 try:
     from py_clob_client.client import ClobClient
+    from py_clob_client.clob_types import ApiCreds
     from py_clob_client.clob_types import OrderArgs
 except Exception:  # pragma: no cover
     ClobClient = None
+    ApiCreds = None
     OrderArgs = None
 
 
@@ -40,6 +43,12 @@ class RiskState:
             self.open_exposure_usd_by_market = {}
 
 
+@dataclass(slots=True)
+class TokenConstraints:
+    min_order_size: float | None = None
+    tick_size: float | None = None
+
+
 class Trader:
     def __init__(self, settings: Settings, token_metadata_cache: TokenMetadataCache | None = None) -> None:
         self.settings = settings
@@ -47,8 +56,10 @@ class Trader:
         self.client = None
         self._risk_state_path = Path(settings.risk_state_path)
         self.risk = self._load_risk_state()
+        self.token_constraints_by_id: dict[str, TokenConstraints] = {}
         self._reset_daily_pnl_if_needed()
         self._update_risk_metrics(risk_blocked=False)
+        self._live_auth_ready = False
 
         if not settings.dry_run and ClobClient is not None:
             self.client = ClobClient(
@@ -56,6 +67,51 @@ class Trader:
                 chain_id=settings.chain_id,
                 key=settings.private_key,
             )
+            self._live_auth_ready = self._initialize_live_auth()
+
+    def _initialize_live_auth(self) -> bool:
+        if self.client is None:
+            logger.error("missing_clob_client")
+            return False
+
+        if not (self.settings.api_key and self.settings.api_secret and self.settings.api_passphrase):
+            logger.error(
+                "missing_clob_l2_credentials",
+                has_api_key=bool(self.settings.api_key),
+                has_api_secret=bool(self.settings.api_secret),
+                has_api_passphrase=bool(self.settings.api_passphrase),
+            )
+            return False
+
+        try:
+            if hasattr(self.client, "set_api_creds"):
+                creds_payload: Any
+                if ApiCreds is not None:
+                    creds_payload = ApiCreds(
+                        api_key=self.settings.api_key,
+                        api_secret=self.settings.api_secret,
+                        api_passphrase=self.settings.api_passphrase,
+                    )
+                else:
+                    creds_payload = {
+                        "api_key": self.settings.api_key,
+                        "api_secret": self.settings.api_secret,
+                        "api_passphrase": self.settings.api_passphrase,
+                    }
+                self.client.set_api_creds(creds_payload)
+            elif hasattr(self.client, "create_or_derive_api_creds"):
+                self.client.create_or_derive_api_creds()
+            elif hasattr(self.client, "derive_api_key"):
+                self.client.derive_api_key()
+
+            if hasattr(self.client, "assert_level_2_auth"):
+                self.client.assert_level_2_auth()
+        except Exception as exc:
+            logger.error("clob_l2_auth_initialization_failed", error=str(exc))
+            return False
+
+        logger.info("clob_l2_auth_initialized")
+        return True
 
     def _load_risk_state(self) -> RiskState:
         if not self._risk_state_path.exists():
@@ -318,6 +374,18 @@ class Trader:
         self._update_risk_metrics(risk_blocked=self._risk_blocked(0.0, token_id=token_id, horizon=horizon, direction=direction))
 
     @staticmethod
+    def _normalize_buy_fok_price(ask: float, tick_size: float) -> float:
+        if tick_size <= 0:
+            raise ValueError("tick_size must be > 0")
+
+        tick_ratio = ask / tick_size
+        nearest_tick = round(tick_ratio)
+        if math.isclose(tick_ratio, nearest_tick, rel_tol=0.0, abs_tol=1e-9):
+            return ask
+
+        return round(math.ceil(tick_ratio) * tick_size, 8)
+
+    @staticmethod
     def _classify_submit_exception(exc: Exception) -> str:
         text = str(exc).lower()
         name = exc.__class__.__name__.lower()
@@ -332,13 +400,62 @@ class Trader:
             return "network"
         return "error"
 
+    @staticmethod
+    def _round_size_up_to_step(size: float, step_size: float) -> float:
+        if step_size <= 0:
+            raise ValueError("step_size must be > 0")
+        return round(math.ceil(size / step_size) * step_size, 8)
+
+    def update_token_constraints(
+        self,
+        token_id: str,
+        *,
+        min_order_size: float | None = None,
+        tick_size: float | None = None,
+    ) -> None:
+        if not token_id:
+            return
+        current = self.token_constraints_by_id.get(token_id, TokenConstraints())
+        if min_order_size is not None and min_order_size > 0:
+            current.min_order_size = float(min_order_size)
+        if tick_size is not None and tick_size > 0:
+            current.tick_size = float(tick_size)
+        self.token_constraints_by_id[token_id] = current
+
     async def buy_fok(self, token_id: str, ask: float, horizon: str) -> bool:
+        constraints = self.token_constraints_by_id.get(token_id, TokenConstraints())
+
         size = self.settings.quote_size_usd / ask
         size = round_size_to_step(size, 0.1)
-        tick_size = 0.001
-        if self.token_metadata_cache is not None:
-            tick_size = self.token_metadata_cache.get_tick_size(token_id, fallback_tick_size=tick_size)
-        px = round_price_to_tick(ask, tick_size)
+        px = round_price_to_tick(ask, constraints.tick_size or 0.001)
+
+        min_order_size = constraints.min_order_size
+        if min_order_size is not None and size < min_order_size:
+            adjusted_size = self._round_size_up_to_step(min_order_size, 0.1)
+            adjusted_notional = adjusted_size * px
+            if not self._check_risk(adjusted_notional, token_id=token_id, horizon=horizon, direction="BUY"):
+                logger.info(
+                    "order_reject_min_order_size",
+                    token_id=token_id,
+                    ask=ask,
+                    min_order_size=min_order_size,
+                    computed_size=size,
+                    adjusted_size=adjusted_size,
+                    adjusted_notional=adjusted_notional,
+                )
+                TRADES.labels(status="rejected_min_size", side="buy", horizon=horizon).inc()
+                return False
+
+            logger.info(
+                "order_size_adjusted_to_minimum",
+                token_id=token_id,
+                ask=ask,
+                original_size=size,
+                adjusted_size=adjusted_size,
+                min_order_size=min_order_size,
+            )
+            size = adjusted_size
+        px = self._normalize_buy_fok_price(ask, 0.001)
 
         notional = size * px
         if not self._check_risk(notional, token_id=token_id, horizon=horizon, direction="BUY"):
@@ -373,6 +490,11 @@ class Trader:
 
         if self.client is None or OrderArgs is None:
             logger.error("missing_clob_client")
+            TRADES.labels(status="error", side="buy", horizon=horizon).inc()
+            return False
+
+        if not self._live_auth_ready:
+            logger.error("missing_clob_l2_credentials")
             TRADES.labels(status="error", side="buy", horizon=horizon).inc()
             return False
 

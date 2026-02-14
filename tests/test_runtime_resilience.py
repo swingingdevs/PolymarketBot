@@ -130,14 +130,9 @@ class _FakeDatetime:
         return _Now(hour=cls.fixed_hour, day=cls.fixed_day)
 
 
-def test_trader_risk_hourly_cap_and_daily_loss_lockout(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-    settings = Settings(
-        dry_run=True,
-        max_trades_per_hour=2,
-        quote_size_usd=10,
-        max_daily_loss=50,
-        risk_state_path=str(tmp_path / "risk_state.json"),
-    )
+def test_trader_risk_hourly_cap_and_daily_loss_lockout(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(Settings, "settings_profile", "paper", raising=False)
+    settings = Settings(dry_run=True, max_trades_per_hour=2, quote_size_usd=10, max_daily_loss=50)
     trader = Trader(settings)
     monkeypatch.setattr("execution.trader.datetime", _FakeDatetime)
 
@@ -179,16 +174,57 @@ def test_market_epoch_roll_triggers_clob_resubscribe() -> None:
     assert clob.subscriptions == [["epoch-1-token"], ["epoch-2-token"]]
 
 
-def test_trader_buy_fok_uses_cached_token_tick_size(tmp_path) -> None:
-    settings = Settings(dry_run=True, quote_size_usd=10, risk_state_path=str(tmp_path / "risk_state.json"))
-    cache = TokenMetadataCache(ttl_seconds=300)
-    cache.put("token-a", TokenMetadata(tick_size=0.01, fee_rate_bps=5))
-    trader = Trader(settings, token_metadata_cache=cache)
+class _CaptureOrderArgs:
+    def __init__(self, **kwargs) -> None:
+        self.price = kwargs["price"]
+        self.size = kwargs["size"]
+        self.side = kwargs["side"]
+        self.token_id = kwargs["token_id"]
+        self.time_in_force = kwargs["time_in_force"]
+
+
+class _CaptureClient:
+    def __init__(self) -> None:
+        self.args: _CaptureOrderArgs | None = None
+
+    def create_and_post_order(self, args: _CaptureOrderArgs):
+        self.args = args
+        return {"fills": [{"price": args.price, "size": args.size}]}
+
+
+def test_buy_fok_uses_ask_when_already_on_tick(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.setattr(Settings, "settings_profile", "paper", raising=False)
+    settings = Settings(dry_run=False, risk_state_path=str(tmp_path / "risk_state.json"), quote_size_usd=10)
+    trader = Trader(settings)
+    trader.client = _CaptureClient()
+    monkeypatch.setattr("execution.trader.OrderArgs", _CaptureOrderArgs)
 
     async def _run() -> None:
-        assert await trader.buy_fok("token-a", ask=0.4567, horizon="5") is True
+        assert await trader.buy_fok("token-a", ask=0.501, horizon="5") is True
+
+    asyncio.run(_run())
+    assert trader.client.args is not None
+    assert trader.client.args.price == 0.501
+
+
+def test_buy_fok_rounds_up_off_tick_and_never_below_ask(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.setattr(Settings, "settings_profile", "paper", raising=False)
+    settings = Settings(dry_run=False, risk_state_path=str(tmp_path / "risk_state.json"), quote_size_usd=10)
+    trader = Trader(settings)
+    trader.client = _CaptureClient()
+    monkeypatch.setattr("execution.trader.OrderArgs", _CaptureOrderArgs)
+
+    asks = [0.5012, 0.50001, 0.9990004]
+    submitted_prices: list[float] = []
+
+    async def _run() -> None:
+        for ask in asks:
+            assert await trader.buy_fok("token-a", ask=ask, horizon="5") is True
+            assert trader.client.args is not None
+            submitted_prices.append(trader.client.args.price)
 
     asyncio.run(_run())
 
-    # price should floor to 0.45 with 0.01 tick, not 0.456 with 0.001 tick
-    assert trader.risk.total_open_notional_usd == 9.81
+    assert submitted_prices[0] == 0.502
+    for ask, submitted in zip(asks, submitted_prices):
+        assert submitted >= ask

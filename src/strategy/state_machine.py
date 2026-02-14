@@ -79,6 +79,8 @@ class StrategyStateMachine:
 
         self.start_prices: dict[int, float] = {}
         self.start_price_metadata: dict[int, dict[str, object]] = {}
+        self.last_5m_bucket: int | None = None
+        self.last_15m_bucket: int | None = None
         self.prices_1s: deque[tuple[int, float]] = deque(maxlen=max(120, self.rolling_window_seconds * 2))
         self.books: dict[str, BookSnapshot] = {}
         self.fill_stats: dict[str, FillProbStats] = {}
@@ -156,14 +158,19 @@ class StrategyStateMachine:
 
         self.last_price = price
 
-        if sec % 300 == 0:
+        bucket_5m = sec // 300
+        if bucket_5m != self.last_5m_bucket:
+            self.last_5m_bucket = bucket_5m
             self.start_prices[300] = price
             self.start_price_metadata[300] = {
                 "price": price,
                 "timestamp": float(metadata.get("timestamp", ts)),
                 "source": metadata.get("source", "unknown"),
             }
-        if sec % 900 == 0:
+
+        bucket_15m = sec // 900
+        if bucket_15m != self.last_15m_bucket:
+            self.last_15m_bucket = bucket_15m
             self.start_prices[900] = price
             self.start_price_metadata[900] = {
                 "price": price,
