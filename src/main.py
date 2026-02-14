@@ -194,6 +194,7 @@ async def orchestrate() -> None:
         d_min=settings.d_min,
         max_entry_price=settings.max_entry_price,
         fee_bps=settings.fee_bps,
+        expected_notional_usd=settings.quote_size_usd,
         probability_calibrator=calibrator,
         calibration_input=settings.calibration_input,
         token_metadata_cache=token_metadata_cache,

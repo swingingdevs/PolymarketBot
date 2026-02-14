@@ -264,6 +264,7 @@ class StrategyStateMachine:
         ask_size: float | None = None,
         fill_prob: float | None = None,
         token_id: str | None = None,
+        expected_size: float | None = None,
     ) -> Candidate | None:
         curr = self.last_price
         if curr is None or ask <= 0:
@@ -313,9 +314,12 @@ class StrategyStateMachine:
             fee_cost = fee_cost_per_share_quote_equivalent(base_rate_bps=fee_bps, price=ask, side="BUY")
         spread = max(0.0, ask - bid) if bid is not None else 0.0
         spread_penalty = 0.5 * spread
+        desired_size = expected_size if expected_size is not None else (self.expected_notional_usd / ask)
+        desired_size = max(0.0, desired_size)
         depth_penalty = 0.0
-        if ask_size is not None and ask_size > 0:
-            depth_penalty = max(0.0, 1.0 - ask_size) * spread
+        if ask_size is not None:
+            shortfall = max(0.0, desired_size - ask_size) / max(desired_size, 1e-9)
+            depth_penalty = shortfall * spread * self.depth_penalty_coeff
         slippage_cost = spread_penalty + depth_penalty
 
         effective_fill_prob = 1.0 if fill_prob is None else min(1.0, max(0.0, fill_prob))
