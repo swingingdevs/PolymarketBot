@@ -24,6 +24,13 @@ class BookTop:
     fill_prob: float | None = None
 
 
+@dataclass(slots=True)
+class TokenConstraints:
+    min_order_size: float | None = None
+    tick_size: float | None = None
+    updated_at: float = 0.0
+
+
 class CLOBWebSocket:
     def __init__(
         self,
@@ -41,6 +48,48 @@ class CLOBWebSocket:
         self.reconnect_delay_min = reconnect_delay_min
         self.reconnect_delay_max = reconnect_delay_max
         self.book_staleness_threshold = float(stale_after_seconds) if stale_after_seconds is not None else float(book_staleness_threshold)
+        self.token_metadata_cache: dict[str, TokenConstraints] = {}
+
+    @staticmethod
+    def _coerce_positive_float(value: object) -> float | None:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
+
+    def _update_token_constraints(self, token_id: str, *, min_order_size: object = None, tick_size: object = None) -> bool:
+        if not token_id:
+            return False
+
+        parsed_min_order_size = self._coerce_positive_float(min_order_size)
+        parsed_tick_size = self._coerce_positive_float(tick_size)
+        if parsed_min_order_size is None and parsed_tick_size is None:
+            return False
+
+        current = self.token_metadata_cache.get(token_id, TokenConstraints())
+        changed = False
+
+        if parsed_min_order_size is not None and current.min_order_size != parsed_min_order_size:
+            current.min_order_size = parsed_min_order_size
+            changed = True
+        if parsed_tick_size is not None and current.tick_size != parsed_tick_size:
+            current.tick_size = parsed_tick_size
+            changed = True
+
+        if changed:
+            current.updated_at = time.time()
+            self.token_metadata_cache[token_id] = current
+            logger.info(
+                "token_constraints_updated",
+                token_id=token_id,
+                min_order_size=current.min_order_size,
+                tick_size=current.tick_size,
+            )
+        return changed
+
+    def get_token_constraints(self, token_id: str) -> TokenConstraints | None:
+        return self.token_metadata_cache.get(token_id)
 
     async def _heartbeat(self, ws: websockets.WebSocketClientProtocol, failed_pings: list[int]) -> None:
         while True:
@@ -94,9 +143,14 @@ class CLOBWebSocket:
                         while True:
                             raw = await ws.recv() if hasattr(ws, "recv") else await ws.__anext__()
                             data = json.loads(raw)
+                            token_id = str(data.get("asset_id") or data.get("token_id") or "")
+                            self._update_token_constraints(
+                                token_id,
+                                min_order_size=data.get("min_order_size"),
+                                tick_size=data.get("tick_size"),
+                            )
                             if data.get("event_type") != "book":
                                 continue
-                            token_id = str(data.get("asset_id"))
                             bids = data.get("bids", [])
                             asks = data.get("asks", [])
                             bid = float(bids[0][0]) if bids else None

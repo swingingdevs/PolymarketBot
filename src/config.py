@@ -91,6 +91,7 @@ class Settings(BaseSettings):
     order_submit_timeout_seconds: float = 5.0
     metrics_host: str = "0.0.0.0"
     metrics_port: int = 9102
+    settings_profile: str = "paper"
 
     @model_validator(mode="after")
     def apply_profile_defaults(self) -> "Settings":
@@ -100,15 +101,15 @@ class Settings(BaseSettings):
             raise ValueError(f"Unknown settings_profile={self.settings_profile}. Allowed: {allowed}")
 
         defaults = PROFILE_DEFAULTS[profile]
-        if self.watch_return_threshold is None:
+        if "watch_return_threshold" not in self.model_fields_set:
             self.watch_return_threshold = float(defaults["watch_return_threshold"])
-        if self.hammer_secs is None:
+        if "hammer_secs" not in self.model_fields_set:
             self.hammer_secs = int(defaults["hammer_secs"])
-        if self.d_min is None:
+        if "d_min" not in self.model_fields_set:
             self.d_min = float(defaults["d_min"])
-        if self.max_entry_price is None:
+        if "max_entry_price" not in self.model_fields_set:
             self.max_entry_price = float(defaults["max_entry_price"])
-        if self.fee_bps is None:
+        if "fee_bps" not in self.model_fields_set:
             self.fee_bps = float(defaults["fee_bps"])
 
         if self.max_entry_price > 0.99:

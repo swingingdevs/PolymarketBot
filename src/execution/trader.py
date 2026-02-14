@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import asyncio
+import math
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,12 +40,19 @@ class RiskState:
             self.open_exposure_usd_by_market = {}
 
 
+@dataclass(slots=True)
+class TokenConstraints:
+    min_order_size: float | None = None
+    tick_size: float | None = None
+
+
 class Trader:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.client = None
         self._risk_state_path = Path(settings.risk_state_path)
         self.risk = self._load_risk_state()
+        self.token_constraints_by_id: dict[str, TokenConstraints] = {}
         self._reset_daily_pnl_if_needed()
         self._update_risk_metrics(risk_blocked=False)
 
@@ -329,10 +338,61 @@ class Trader:
             return "network"
         return "error"
 
+    @staticmethod
+    def _round_size_up_to_step(size: float, step_size: float) -> float:
+        if step_size <= 0:
+            raise ValueError("step_size must be > 0")
+        return round(math.ceil(size / step_size) * step_size, 8)
+
+    def update_token_constraints(
+        self,
+        token_id: str,
+        *,
+        min_order_size: float | None = None,
+        tick_size: float | None = None,
+    ) -> None:
+        if not token_id:
+            return
+        current = self.token_constraints_by_id.get(token_id, TokenConstraints())
+        if min_order_size is not None and min_order_size > 0:
+            current.min_order_size = float(min_order_size)
+        if tick_size is not None and tick_size > 0:
+            current.tick_size = float(tick_size)
+        self.token_constraints_by_id[token_id] = current
+
     async def buy_fok(self, token_id: str, ask: float, horizon: str) -> bool:
+        constraints = self.token_constraints_by_id.get(token_id, TokenConstraints())
+
         size = self.settings.quote_size_usd / ask
         size = round_size_to_step(size, 0.1)
-        px = round_price_to_tick(ask, 0.001)
+        px = round_price_to_tick(ask, constraints.tick_size or 0.001)
+
+        min_order_size = constraints.min_order_size
+        if min_order_size is not None and size < min_order_size:
+            adjusted_size = self._round_size_up_to_step(min_order_size, 0.1)
+            adjusted_notional = adjusted_size * px
+            if not self._check_risk(adjusted_notional, token_id=token_id, horizon=horizon, direction="BUY"):
+                logger.info(
+                    "order_reject_min_order_size",
+                    token_id=token_id,
+                    ask=ask,
+                    min_order_size=min_order_size,
+                    computed_size=size,
+                    adjusted_size=adjusted_size,
+                    adjusted_notional=adjusted_notional,
+                )
+                TRADES.labels(status="rejected_min_size", side="buy", horizon=horizon).inc()
+                return False
+
+            logger.info(
+                "order_size_adjusted_to_minimum",
+                token_id=token_id,
+                ask=ask,
+                original_size=size,
+                adjusted_size=adjusted_size,
+                min_order_size=min_order_size,
+            )
+            size = adjusted_size
 
         notional = size * px
         if not self._check_risk(notional, token_id=token_id, horizon=horizon, direction="BUY"):
