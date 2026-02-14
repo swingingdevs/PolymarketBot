@@ -37,6 +37,12 @@ PROFILE_DEFAULTS: dict[str, dict[str, float | int]] = {
     },
 }
 
+JURISDICTION_BANNED_CATEGORIES: dict[str, tuple[str, ...]] = {
+    "default": tuple(),
+    "us": ("sports",),
+    "us-nj": ("sports",),
+}
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
