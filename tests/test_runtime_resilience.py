@@ -226,11 +226,11 @@ def test_market_epoch_roll_triggers_clob_resubscribe() -> None:
 
 class _CaptureClient:
     def __init__(self) -> None:
-        self.market_order_args: dict[str, object] | None = None
+        self.limit_order_args: dict[str, object] | None = None
         self.posted_order: dict[str, object] | None = None
 
-    def create_market_order(self, **kwargs):
-        self.market_order_args = kwargs
+    def create_limit_order(self, **kwargs):
+        self.limit_order_args = kwargs
         return kwargs
 
     def post_order(self, order, time_in_force="FOK"):
@@ -238,7 +238,7 @@ class _CaptureClient:
         return {"fills": [{"price": order.get("price", 0.0) or 0.0, "size": order["size"]}]}
 
 
-def test_buy_fok_uses_market_order_api(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+def test_buy_fok_uses_limit_order_api(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setattr(Settings, "settings_profile", "paper", raising=False)
     settings = Settings(dry_run=False, risk_state_path=str(tmp_path / "risk_state.json"), quote_size_usd=10)
     trader = Trader(settings)
@@ -249,13 +249,14 @@ def test_buy_fok_uses_market_order_api(monkeypatch: pytest.MonkeyPatch, tmp_path
         assert await trader.buy_fok("token-a", ask=0.501, horizon="5") is True
 
     asyncio.run(_run())
-    assert trader.client.market_order_args is not None
-    assert trader.client.market_order_args["token_id"] == "token-a"
+    assert trader.client.limit_order_args is not None
+    assert trader.client.limit_order_args["token_id"] == "token-a"
+    assert trader.client.limit_order_args["time_in_force"] == "FOK"
     assert trader.client.posted_order is not None
     assert trader.client.posted_order["time_in_force"] == "FOK"
 
 
-def test_buy_fok_market_order_requests_fok_for_every_submit(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+def test_buy_fok_limit_order_requests_fok_for_every_submit(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setattr(Settings, "settings_profile", "paper", raising=False)
     settings = Settings(dry_run=False, risk_state_path=str(tmp_path / "risk_state.json"), quote_size_usd=10)
     trader = Trader(settings)
@@ -287,7 +288,7 @@ def test_buy_fok_best_ask_0983_with_tick_0001_never_submits_0982(monkeypatch: py
         assert await trader.buy_fok("token-a", ask=0.983, horizon="5") is True
 
     asyncio.run(_run())
-    assert trader.client.market_order_args is not None
+    assert trader.client.limit_order_args is not None
     assert trader.client.posted_order is not None
 
 
@@ -303,5 +304,5 @@ def test_buy_fok_honors_non_default_tick_size(monkeypatch: pytest.MonkeyPatch, t
         assert await trader.buy_fok("token-a", ask=0.983, horizon="5") is True
 
     asyncio.run(_run())
-    assert trader.client.market_order_args is not None
+    assert trader.client.limit_order_args is not None
     assert trader.client.posted_order is not None

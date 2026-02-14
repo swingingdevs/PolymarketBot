@@ -300,19 +300,10 @@ class CLOBWebSocket:
     def _build_subscription_payload(self, token_ids: set[str]) -> bytes:
         token_set = frozenset(token_ids)
         if token_set != self._subscription_cache_token_ids:
-            self._subscription_cache_payload = json.dumps({"assets_ids": sorted(token_set), "type": "market"}).encode()
+            self._subscription_cache_payload = orjson.dumps({"assets_ids": sorted(token_set), "type": "market"})
             self._subscription_cache_token_ids = token_set
         return self._subscription_cache_payload if self._subscription_cache_payload is not None else b""
 
-    async def update_subscriptions(self, token_ids: list[str]) -> None:
-        if self._ws is None:
-            return
-
-        desired = set(token_ids)
-        if desired == self._subscribed_token_ids:
-            return
-        await self._ws.send(orjson.dumps({"assets_ids": sorted(desired), "type": "market"}))
-        self._subscribed_token_ids = desired
 
     async def stream_books(self, token_ids: list[str]) -> AsyncIterator[BookTop]:
         backoff = self.reconnect_delay_min

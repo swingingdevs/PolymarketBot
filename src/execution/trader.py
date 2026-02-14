@@ -604,42 +604,18 @@ class Trader:
         if self.client is None:
             raise RuntimeError("missing_clob_client")
 
-        if hasattr(self.client, "create_market_order") and hasattr(self.client, "post_order"):
-            market_args = {"token_id": token_id, "side": "BUY", "size": size}
-            market_order = self.client.create_market_order(**market_args)
-            try:
-                return self.client.post_order(market_order, time_in_force="FOK")
-            except TypeError:
-                return self.client.post_order(market_order)
-
         if hasattr(self.client, "create_limit_order") and hasattr(self.client, "post_order"):
-            fallback_errors: list[Exception] = []
-            for tif in ("FOK", "IOC", "GTC"):
-                try:
-                    limit_order = self.client.create_limit_order(
-                        price=px,
-                        size=size,
-                        side="BUY",
-                        token_id=token_id,
-                        time_in_force=tif,
-                    )
-                    try:
-                        response = self.client.post_order(limit_order, time_in_force=tif)
-                    except TypeError:
-                        response = self.client.post_order(limit_order)
-
-                    if tif == "GTC" and hasattr(self.client, "cancel"):
-                        order_id = None
-                        if isinstance(response, dict):
-                            order_id = response.get("orderID") or response.get("id")
-                        if order_id:
-                            self.client.cancel(order_id)
-                    return response
-                except Exception as exc:
-                    fallback_errors.append(exc)
-                    continue
-            if fallback_errors:
-                raise fallback_errors[-1]
+            limit_order = self.client.create_limit_order(
+                price=px,
+                size=size,
+                side="BUY",
+                token_id=token_id,
+                time_in_force="FOK",
+            )
+            try:
+                return self.client.post_order(limit_order, time_in_force="FOK")
+            except TypeError:
+                return self.client.post_order(limit_order)
 
         raise RuntimeError("unsupported_order_submission_api")
 
@@ -656,11 +632,8 @@ class Trader:
         tick_size = constraints.tick_size
         min_order_size = constraints.min_order_size
 
-        if self.token_metadata_cache is not None:
-            if tick_size is None:
-                tick_size = self.token_metadata_cache.get_tick_size(token_id, fallback_tick_size=0.001)
-            if min_order_size is None:
-                min_order_size = self.token_metadata_cache.get_min_order_size(token_id)
+        if self.token_metadata_cache is not None and tick_size is None:
+            tick_size = self.token_metadata_cache.get_tick_size(token_id, fallback_tick_size=0.001)
 
         tick_size = tick_size or 0.001
         min_order_size = min_order_size or 0.1
