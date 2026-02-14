@@ -56,6 +56,13 @@ class TokenConstraints:
     tick_size: float | None = None
 
 
+@dataclass(slots=True)
+class EffectiveRiskCaps:
+    daily_loss_cap_usd: float
+    exposure_per_market_cap_usd: float
+    total_exposure_cap_usd: float
+
+
 class Trader:
     def __init__(self, settings: Settings, token_metadata_cache: TokenMetadataCache | None = None) -> None:
         self.settings = settings
@@ -65,10 +72,12 @@ class Trader:
         self.risk = self._load_risk_state()
         self.token_constraints_by_id: dict[str, TokenConstraints] = {}
         self._reset_daily_pnl_if_needed()
+        self._publish_configured_risk_limits()
         self._update_risk_metrics(risk_blocked=False)
         self._live_auth_ready = False
         self._cached_equity_usd: float = max(0.0, float(getattr(settings, "equity_usd", 1000.0)))
         self._last_equity_refresh_ts: float = 0.0
+        self._equity_refresh_failed: bool = False
 
         if self.risk.peak_equity_usd <= 0:
             self.risk.peak_equity_usd = self._cached_equity_usd
@@ -251,20 +260,52 @@ class Trader:
                 return parsed
         return None
 
+    def _effective_equity_usd(self) -> float | None:
+        exchange_equity = self._query_exchange_equity_usd()
+        if exchange_equity is not None:
+            return exchange_equity
+        if not self.settings.dry_run:
+            return None
+        if not self.settings.allow_dry_run_equity_fallback:
+            return None
+        return max(0.0, self.settings.equity_usd + self.risk.cumulative_realized_pnl)
+
     def _refresh_equity_cache(self, force: bool = False) -> float:
         now = time.time()
         if not force and (now - self._last_equity_refresh_ts) < self.settings.equity_refresh_seconds:
             return self._cached_equity_usd
 
-        refreshed = self._query_exchange_equity_usd()
+        refreshed = self._effective_equity_usd()
         if refreshed is not None:
             self._cached_equity_usd = refreshed
             self._last_equity_refresh_ts = now
+            self._equity_refresh_failed = False
             return self._cached_equity_usd
 
         self._last_equity_refresh_ts = now
         self._cached_equity_usd = max(0.0, float(getattr(self.settings, "equity_usd", 1000.0)) + self.risk.cumulative_realized_pnl)
         return self._cached_equity_usd
+
+    def _publish_configured_risk_limits(self) -> None:
+        MAX_DAILY_LOSS_USD_CONFIGURED.set(max(0.0, self.settings.max_daily_loss_usd))
+        MAX_DAILY_LOSS_PCT_CONFIGURED.set(max(0.0, self.settings.max_daily_loss_pct))
+        MAX_OPEN_EXPOSURE_PER_MARKET_USD_CONFIGURED.set(max(0.0, self.settings.max_open_exposure_per_market_usd))
+        MAX_OPEN_EXPOSURE_PER_MARKET_PCT_CONFIGURED.set(max(0.0, self.settings.max_open_exposure_per_market_pct))
+        MAX_TOTAL_OPEN_EXPOSURE_USD_CONFIGURED.set(max(0.0, self.settings.max_total_open_exposure_usd))
+        MAX_TOTAL_OPEN_EXPOSURE_PCT_CONFIGURED.set(max(0.0, self.settings.max_total_open_exposure_pct))
+
+    def _compute_effective_risk_caps(self, equity_usd: float) -> EffectiveRiskCaps:
+        return EffectiveRiskCaps(
+            daily_loss_cap_usd=min(self.settings.max_daily_loss_usd, self.settings.max_daily_loss_pct * equity_usd),
+            exposure_per_market_cap_usd=min(
+                self.settings.max_open_exposure_per_market_usd,
+                self.settings.max_open_exposure_per_market_pct * equity_usd,
+            ),
+            total_exposure_cap_usd=min(
+                self.settings.max_total_open_exposure_usd,
+                self.settings.max_total_open_exposure_pct * equity_usd,
+            ),
+        )
 
     def _cooldown_active(self) -> bool:
         return time.time() < self.risk.cooldown_until_ts
@@ -447,13 +488,14 @@ class Trader:
         token_id: str,
         horizon: str,
         direction: str,
+        effective_caps: EffectiveRiskCaps,
         *,
         market_slug: str | None = None,
         market_start_epoch: int | None = None,
     ) -> bool:
         if notional_usd > self.settings.max_usd_per_trade:
             return True
-        if self.risk.daily_realized_pnl <= -abs(self.settings.max_daily_loss):
+        if self.risk.daily_realized_pnl <= -abs(effective_caps.daily_loss_cap_usd):
             return True
         if self._cooldown_active():
             return True
@@ -467,15 +509,16 @@ class Trader:
             market_start_epoch=market_start_epoch,
         )
         next_market_exposure = self.risk.open_exposure_usd_by_market.get(market_key, 0.0) + notional_usd
-        if next_market_exposure > self.settings.max_open_exposure_per_market:
+        if next_market_exposure > effective_caps.exposure_per_market_cap_usd:
             return True
-        if (self.risk.total_open_notional_usd + notional_usd) > self.settings.max_total_open_exposure:
+        if (self.risk.total_open_notional_usd + notional_usd) > effective_caps.total_exposure_cap_usd:
             return True
         return False
 
     def _update_risk_metrics(self, risk_blocked: bool) -> None:
         DAILY_REALIZED_PNL.set(self.risk.daily_realized_pnl)
-        RISK_LIMIT_BLOCKED.set(1 if risk_blocked else 0)
+        if risk_blocked:
+            RISK_LIMIT_BLOCKED.inc()
 
     def _check_risk(
         self,
@@ -488,7 +531,11 @@ class Trader:
         market_start_epoch: int | None = None,
     ) -> bool:
         self._reset_daily_pnl_if_needed()
-        self._refresh_equity_cache()
+        equity_usd = self._refresh_equity_cache()
+        if self._equity_refresh_failed:
+            self._update_risk_metrics(risk_blocked=True)
+            return False
+        effective_caps = self._compute_effective_risk_caps(equity_usd)
         cleaned = self._cleanup_expired_exposure()
         now_hour = datetime.now(timezone.utc).hour
         if now_hour != self.risk.last_trade_hour:
@@ -504,6 +551,7 @@ class Trader:
             token_id=token_id,
             horizon=horizon,
             direction=direction,
+            effective_caps=effective_caps,
             market_slug=market_slug,
             market_start_epoch=market_start_epoch,
         )
@@ -705,6 +753,7 @@ class Trader:
                 token_id=token_id,
                 horizon=horizon,
                 direction=direction,
+                effective_caps=self._compute_effective_risk_caps(self._refresh_equity_cache()),
                 market_slug=market_slug,
                 market_start_epoch=market_start_epoch,
             )
@@ -863,7 +912,7 @@ class Trader:
                 ask=ask,
                 size=size,
                 daily_realized_pnl=self.risk.daily_realized_pnl,
-                max_daily_loss=self.settings.max_daily_loss,
+                max_daily_loss_usd=self.settings.max_daily_loss_usd,
                 trades_this_hour=self.risk.trades_this_hour,
                 open_exposure_market=self.risk.open_exposure_usd_by_market.get(
                     self._market_exposure_key(
@@ -975,6 +1024,7 @@ class Trader:
                 token_id=token_id,
                 horizon=horizon,
                 direction="BUY",
+                effective_caps=self._compute_effective_risk_caps(self._refresh_equity_cache()),
                 market_slug=market_slug,
                 market_start_epoch=market_start_epoch,
             ),

@@ -1,0 +1,34 @@
+groups:
+  - name: polymarket-bot
+    rules:
+      - alert: BotTradingDisabledTooLong
+        expr: bot_trading_allowed == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Trading disabled for more than 5 minutes"
+
+      - alert: BotKillSwitchActive
+        expr: bot_kill_switch_active == 1
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Kill-switch has been active for over 30 seconds"
+
+      - alert: ChainlinkFeedLagHigh
+        expr: feed_lag_seconds{feed="chainlink"} > 2.5
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: "Chainlink feed lag exceeded 2.5 seconds"
+
+      - alert: DailyLossApproachingLimit
+        expr: (-1 * bot_daily_realized_pnl_usd) > (0.8 * bot_max_daily_loss_usd_configured)
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Daily realized loss exceeded 80% of configured cap"
