@@ -56,6 +56,7 @@ class RiskState:
     consecutive_losses: int = 0
     cooldown_until_ts: float = 0.0
     peak_equity_usd: float = 0.0
+    last_trade_ts: float = 0.0
 
     def __post_init__(self) -> None:
         if self.open_exposure_usd_by_market is None:
@@ -211,6 +212,7 @@ class Trader:
             consecutive_losses=int(payload.get("consecutive_losses", 0)),
             cooldown_until_ts=float(payload.get("cooldown_until_ts", 0.0)),
             peak_equity_usd=float(payload.get("peak_equity_usd", 0.0)),
+            last_trade_ts=float(payload.get("last_trade_ts", 0.0)),
         )
         if state.total_open_notional_usd <= 0 and state.open_exposure_usd_by_market:
             state.total_open_notional_usd = sum(state.open_exposure_usd_by_market.values())
@@ -513,6 +515,10 @@ class Trader:
             return True
         if self.risk.trades_this_hour >= self.settings.max_trades_per_hour:
             return True
+        min_interval = max(0, int(getattr(self.settings, "min_trade_interval_seconds", 0)))
+        if min_interval > 0 and self.risk.last_trade_ts > 0:
+            if (time.time() - self.risk.last_trade_ts) < min_interval:
+                return True
         market_key = self._market_exposure_key(
             token_id,
             horizon,
@@ -735,6 +741,7 @@ class Trader:
         market_start_epoch: int | None = None,
     ) -> None:
         self._reset_daily_pnl_if_needed()
+        self.risk.last_trade_ts = time.time()
         realized_pnl = self._extract_realized_pnl(resp)
         if realized_pnl:
             self.risk.daily_realized_pnl += realized_pnl

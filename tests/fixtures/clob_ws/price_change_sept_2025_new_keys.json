@@ -1,0 +1,28 @@
+{
+  "event_type": "price_change",
+  "timestamp": 1758000000000,
+  "price_changes": [
+    {
+      "asset_id": "token-new-1",
+      "best_bid": "0.41",
+      "best_bid_size": "120",
+      "best_ask": "0.43",
+      "best_ask_size": "90",
+      "hash": "0xabc123",
+      "side": "BUY",
+      "price": "0.42",
+      "size": "100",
+      "timestamp": 1758000000100
+    },
+    {
+      "asset_id": "token-new-2",
+      "best_bid": "0.57",
+      "best_ask": "0.59",
+      "hash": "0xdef456",
+      "side": "SELL",
+      "price": "0.58",
+      "size": "75",
+      "timestamp": 1758000000200
+    }
+  ]
+}
