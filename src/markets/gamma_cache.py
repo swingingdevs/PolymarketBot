@@ -60,7 +60,9 @@ class GammaCache:
         loop.create_task(session.close())
 
     @staticmethod
-    def _validate_market_row(row: dict[str, object], slug: str, horizon_minutes: int, start_epoch: int) -> None:
+    def _validate_market_row(
+        row: dict[str, object], slug: str, horizon_minutes: int, start_epoch: int
+    ) -> tuple[int, int]:
         pattern = r"^btc-updown-(5|15)m-(\d+)$"
         row_slug = str(row.get("slug", ""))
         m = re.match(pattern, row_slug)
@@ -81,10 +83,13 @@ class GammaCache:
         end = int(datetime.fromisoformat(str(end_iso).replace("Z", "+00:00")).timestamp())
 
         if start != start_epoch:
-            raise ValueError(f"start time mismatch. expected={start_epoch} got={start}")
-        expected_end = start_epoch + horizon_minutes * 60
-        if end != expected_end:
-            raise ValueError(f"invalid market duration. expected_end={expected_end} got={end}")
+            logger.warning(
+                "gamma_market_start_mismatch",
+                slug=slug,
+                horizon_minutes=horizon_minutes,
+                expected_start_epoch=start_epoch,
+                observed_start_epoch=start,
+            )
 
         now = int(time.time())
         if end <= now:
@@ -96,6 +101,8 @@ class GammaCache:
         desc = str(row.get("description", "")).lower()
         if "btc" not in question + desc or "usd" not in question + desc:
             raise ValueError("underlying is not BTC/USD")
+
+        return start, end
 
 
     @staticmethod
@@ -239,7 +246,18 @@ class GammaCache:
             raise ValueError(f"Multiple markets returned for slug={slug}")
 
         row = rows[0]
-        self._validate_market_row(row, slug, horizon_minutes, start_epoch)
+        observed_start_epoch, observed_end_epoch = self._validate_market_row(row, slug, horizon_minutes, start_epoch)
+        expected_end_epoch = start_epoch + horizon_minutes * 60
+        if observed_end_epoch != expected_end_epoch:
+            logger.warning(
+                "gamma_market_end_drift",
+                slug=slug,
+                horizon_minutes=horizon_minutes,
+                expected_start_epoch=start_epoch,
+                observed_start_epoch=observed_start_epoch,
+                expected_end_epoch=expected_end_epoch,
+                observed_end_epoch=observed_end_epoch,
+            )
 
         outcomes = row.get("outcomes", [])
         clob_ids = row.get("clobTokenIds", [])
@@ -257,7 +275,7 @@ class GammaCache:
         market = UpDownMarket(
             slug=slug,
             start_epoch=start_epoch,
-            end_epoch=start_epoch + horizon_minutes * 60,
+            end_epoch=expected_end_epoch,
             up_token_id=up,
             down_token_id=down,
             horizon_minutes=horizon_minutes,
