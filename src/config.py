@@ -197,6 +197,27 @@ class Settings(BaseSettings):
     recorder_output_path: str = "artifacts/session_recording.jsonl"
     recorder_queue_maxsize: int = 10000
     geoblock_abort: bool = True
+    deployment_jurisdiction_override: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "deployment_jurisdiction_override",
+            "DEPLOYMENT_JURISDICTION_OVERRIDE",
+        ),
+    )
+    jurisdiction_override: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "jurisdiction_override",
+            "JURISDICTION_OVERRIDE",
+        ),
+    )
+    account_jurisdiction_override: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "account_jurisdiction_override",
+            "ACCOUNT_JURISDICTION_OVERRIDE",
+        ),
+    )
     heartbeat_enabled: bool = True
     heartbeat_interval_seconds: float = 15.0
     heartbeat_max_consecutive_failures: int = 2
