@@ -40,6 +40,14 @@ def test_explicit_env_overrides_still_win(monkeypatch: pytest.MonkeyPatch) -> No
     assert settings.fee_bps == 7.5
 
 
+def test_explicit_env_override_matching_baseline_default_still_wins(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SETTINGS_PROFILE", "live")
+    monkeypatch.setenv("HAMMER_SECS", "15")
+    settings = Settings()
+    assert settings.settings_profile == "live"
+    assert settings.hammer_secs == 15
+
+
 def test_invalid_profile_is_rejected_with_useful_error() -> None:
     with pytest.raises(ValueError, match=r"Input should be 'paper', 'live', 'high_vol' or 'low_vol'"):
         Settings(settings_profile="bad_profile")

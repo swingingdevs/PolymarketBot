@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Literal
 
 from pydantic import AliasChoices, Field, HttpUrl, model_validator
@@ -199,6 +200,32 @@ class Settings(BaseSettings):
     heartbeat_max_consecutive_failures: int = 2
     heartbeat_cancel_on_failure: bool = True
 
+    _PROFILE_TUNABLE_FIELDS: tuple[str, ...] = (
+        "watch_return_threshold",
+        "hammer_secs",
+        "d_min",
+        "max_entry_price",
+        "fee_bps",
+    )
+
+    @classmethod
+    def _field_default(cls, field_name: str) -> object:
+        return cls.model_fields[field_name].default
+
+    @classmethod
+    def _is_explicit_override(cls, settings: "Settings", field_name: str) -> bool:
+        if field_name in settings.model_fields_set:
+            return True
+
+        env_keys = {field_name, field_name.upper()}
+        validation_alias = cls.model_fields[field_name].validation_alias
+        if isinstance(validation_alias, AliasChoices):
+            env_keys.update(str(choice) for choice in validation_alias.choices)
+        elif isinstance(validation_alias, str):
+            env_keys.add(validation_alias)
+
+        return any(key in os.environ for key in env_keys)
+
     @model_validator(mode="after")
     def apply_profile_defaults(self) -> "Settings":
         profile = self.settings_profile.strip().lower()
@@ -208,16 +235,16 @@ class Settings(BaseSettings):
         self.settings_profile = profile
 
         defaults = PROFILE_DEFAULTS[profile]
-        if "watch_return_threshold" not in self.model_fields_set:
-            self.watch_return_threshold = float(defaults["watch_return_threshold"])
-        if "hammer_secs" not in self.model_fields_set:
-            self.hammer_secs = int(defaults["hammer_secs"])
-        if "d_min" not in self.model_fields_set:
-            self.d_min = float(defaults["d_min"])
-        if "max_entry_price" not in self.model_fields_set:
-            self.max_entry_price = float(defaults["max_entry_price"])
-        if "fee_bps" not in self.model_fields_set:
-            self.fee_bps = float(defaults["fee_bps"])
+        for field_name in self._PROFILE_TUNABLE_FIELDS:
+            if self._is_explicit_override(self, field_name):
+                continue
+
+            baseline_default = self._field_default(field_name)
+            if getattr(self, field_name) != baseline_default:
+                continue
+
+            profile_default = defaults[field_name]
+            setattr(self, field_name, type(baseline_default)(profile_default))
 
         if self.max_entry_price > 0.99:
             raise ValueError("Unsafe configuration: max_entry_price must be <= 0.99")
