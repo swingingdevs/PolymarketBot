@@ -78,6 +78,12 @@ def seed_strategy_prices(strategy: StrategyStateMachine, base_price: float, now_
 async def main() -> None:
     rtds_liveness_deadline_seconds = 20
     settings = Settings(settings_profile="paper", dry_run=True)
+    print(
+        "[SMOKE] RTDS_CONFIG",
+        f"RTDS_WS_URL={settings.rtds_ws_url}",
+        f"RTDS_TOPIC={settings.rtds_topic}",
+        f"SYMBOL={settings.symbol}",
+    )
     gamma = GammaCache(str(settings.gamma_api_url))
     try:
         markets = await resolve_markets(gamma)

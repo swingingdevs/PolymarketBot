@@ -21,14 +21,21 @@ class _ResolveFailed(Exception):
     pass
 
 
-def test_main_closes_gamma_when_market_resolution_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_main_closes_gamma_when_market_resolution_fails(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     gamma_close = AsyncMock()
     gamma = SimpleNamespace(close=gamma_close)
 
     monkeypatch.setattr(
         smoke_runtime,
         "Settings",
-        lambda settings_profile, dry_run: SimpleNamespace(gamma_api_url="https://gamma.invalid"),
+        lambda settings_profile, dry_run: SimpleNamespace(
+            gamma_api_url="https://gamma.invalid",
+            rtds_ws_url="wss://example.invalid/rtds",
+            rtds_topic="crypto_prices_chainlink",
+            symbol="btc/usd",
+            settings_profile="paper",
+            dry_run=True,
+        ),
     )
     monkeypatch.setattr(smoke_runtime, "GammaCache", lambda api_url: gamma)
 
@@ -40,4 +47,9 @@ def test_main_closes_gamma_when_market_resolution_fails(monkeypatch: pytest.Monk
     with pytest.raises(_ResolveFailed):
         asyncio.run(smoke_runtime.main())
 
+    captured = capsys.readouterr()
+    assert "[SMOKE] RTDS_CONFIG" in captured.out
+    assert "RTDS_WS_URL=wss://example.invalid/rtds" in captured.out
+    assert "RTDS_TOPIC=crypto_prices_chainlink" in captured.out
+    assert "SYMBOL=btc/usd" in captured.out
     gamma_close.assert_awaited_once_with()

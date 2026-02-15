@@ -207,6 +207,12 @@ async def stream_clob_with_resubscribe(
 async def orchestrate() -> None:
     settings = Settings()
     configure_logging()
+    logger.info(
+        "startup_rtds_config",
+        rtds_ws_url=settings.rtds_ws_url,
+        rtds_topic=settings.rtds_topic,
+        symbol=settings.symbol,
+    )
     start_metrics_server(settings.metrics_host, settings.metrics_port)
     geoblock_trading_allowed, _country, _region, jurisdiction_key = await run_startup_geoblock_preflight(settings)
     banned_categories = set(JURISDICTION_BANNED_CATEGORIES.get("default", tuple()))
