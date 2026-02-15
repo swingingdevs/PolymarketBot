@@ -130,6 +130,51 @@ def test_get_market_reuses_single_client_session(monkeypatch: pytest.MonkeyPatch
     assert created_sessions[0].closed is True
 
 
+def test_get_market_allows_start_time_drift_when_slug_matches(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = int(time.time())
+    start = ((now // 300) + 3) * 300
+    row = _valid_row(start, 5)
+    row["startDate"] = row["endDate"]
+
+    class FakeResponse:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def raise_for_status(self) -> None:
+            return
+
+        async def json(self) -> list[dict[str, object]]:
+            return [row]
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def get(self, _url: str, *, params: dict[str, str], timeout: int):
+            del params, timeout
+            return FakeResponse()
+
+        async def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr("markets.gamma_cache.aiohttp.ClientSession", FakeSession)
+
+    async def _run() -> UpDownMarket:
+        cache = GammaCache("https://gamma-api.polymarket.com")
+        try:
+            return await cache.get_market(5, start)
+        finally:
+            await cache.close()
+
+    market = asyncio.run(_run())
+    assert isinstance(market, UpDownMarket)
+    assert market.slug == build_slug(5, start)
+    assert market.end_epoch == start + 300
+
+
 def test_resolve_markets_falls_back_per_horizon(monkeypatch: pytest.MonkeyPatch) -> None:
     now = 1_710_000_123
     start_5m_floor = now - (now % 300)
