@@ -95,3 +95,34 @@ def test_live_mode_fails_closed_when_equity_unavailable(tmp_path):
     trader = Trader(settings)
 
     assert trader._check_risk(10.0, token_id="t1", horizon="5m", direction="BUY") is False
+
+
+def test_live_mode_refresh_marks_failure_without_synthetic_fallback(tmp_path):
+    settings = Settings(
+        dry_run=False,
+        risk_state_path=str(tmp_path / "risk_state.json"),
+        equity_usd=1_000.0,
+    )
+    trader = Trader(settings)
+    trader.risk.cumulative_realized_pnl = -250.0
+
+    refreshed = trader._refresh_equity_cache(force=True)
+
+    assert refreshed == 1_000.0
+    assert trader._equity_refresh_failed is True
+
+
+def test_successful_refresh_clears_failure_flag(tmp_path, monkeypatch):
+    settings = Settings(
+        dry_run=False,
+        risk_state_path=str(tmp_path / "risk_state.json"),
+    )
+    trader = Trader(settings)
+    monkeypatch.setattr(trader, "_effective_equity_usd", lambda: None)
+    trader._refresh_equity_cache(force=True)
+
+    monkeypatch.setattr(trader, "_effective_equity_usd", lambda: 1_500.0)
+    refreshed = trader._refresh_equity_cache(force=True)
+
+    assert refreshed == 1_500.0
+    assert trader._equity_refresh_failed is False
