@@ -31,11 +31,26 @@ def test_missing_divergence_data_keeps_kill_switch_active() -> None:
     q.update_chainlink(price=50000, payload_ts=100.0, received_ts=100.0)
 
     decision = q.evaluate(now=101.0)
-    update_quorum_metrics(decision)
+    update_quorum_metrics(decision, geoblock_trading_allowed=True)
 
     assert decision.trading_allowed is False
     assert decision.divergence_data_available is False
     assert "DIVERGENCE_DATA_MISSING" in decision.reason_codes
+    assert TRADING_ALLOWED._value.get() == 0
+    assert KILL_SWITCH_ACTIVE._value.get() == 1
+
+
+def test_geoblock_disables_trading_metric_when_quorum_is_healthy() -> None:
+    q = QuorumHealth(chainlink_max_lag_seconds=30.0, spot_max_lag_seconds=30.0, min_spot_sources=2)
+    q.update_chainlink(price=50000, payload_ts=100.0, received_ts=100.0)
+    q.update_spot(feed="binance", price=50010, payload_ts=100.0, received_ts=100.0)
+    q.update_spot(feed="coinbase", price=50020, payload_ts=100.0, received_ts=100.0)
+
+    decision = q.evaluate(now=101.0)
+    update_quorum_metrics(decision, geoblock_trading_allowed=False)
+
+    assert decision.trading_allowed is True
+    assert decision.divergence_data_available is True
     assert TRADING_ALLOWED._value.get() == 0
     assert KILL_SWITCH_ACTIVE._value.get() == 1
 

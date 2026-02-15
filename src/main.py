@@ -75,12 +75,14 @@ def update_api_credential_age_metric(created_at: float | None) -> None:
     BOT_API_CREDS_AGE_SECONDS.set(max(0.0, time.time() - created_at))
 
 
-def update_quorum_metrics(decision: QuorumDecision) -> None:
+def update_quorum_metrics(decision: QuorumDecision, *, geoblock_trading_allowed: bool) -> None:
     divergence_data_available = decision.divergence_data_available
-    TRADING_ALLOWED.set(1 if decision.trading_allowed else 0)
-    KILL_SWITCH_ACTIVE.set(0 if (decision.trading_allowed and divergence_data_available) else 1)
+    effective_trading_allowed = decision.trading_allowed and geoblock_trading_allowed
+    TRADING_ALLOWED.set(1 if effective_trading_allowed else 0)
+    KILL_SWITCH_ACTIVE.set(0 if (effective_trading_allowed and divergence_data_available) else 1)
     if divergence_data_available:
-        ORACLE_SPOT_DIVERGENCE_PCT.set(decision.spot_quorum_divergence_pct)
+        if decision.divergence_pct is not None:
+            ORACLE_SPOT_DIVERGENCE_PCT.set(decision.divergence_pct)
     for feed in ("chainlink", "binance", "coinbase"):
         FEED_LAG_SECONDS.labels(feed=feed).set(decision.feed_lag_seconds.get(feed, 0.0))
 
