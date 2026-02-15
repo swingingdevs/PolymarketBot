@@ -113,6 +113,40 @@ def test_rtds_subscribe_both_topics_and_timestamp_normalization(monkeypatch: pyt
         assert json.loads(sub["filters"]) == {"symbol": "btc/usd"}
 
 
+def test_rtds_symbol_is_normalized_before_comparison(monkeypatch: pytest.MonkeyPatch) -> None:
+    ws = _FakeWebSocket(
+        [
+            json.dumps(
+                {
+                    "topic": "crypto_prices_chainlink",
+                    "payload": {
+                        "symbol": "BTC-USD",
+                        "value": "43123.5",
+                        "timestamp": 1712345679.901,
+                    },
+                }
+            ),
+        ]
+    )
+    monkeypatch.setattr("feeds.rtds.websockets.connect", _connect_factory(ws))
+
+    feed = RTDSFeed("wss://unused", symbol="BTCUSD", log_price_comparison=False)
+
+    async def _run():
+        stream = feed.stream_prices()
+        item = await stream.__anext__()
+        await stream.aclose()
+        return item
+
+    _ts, price, _metadata = asyncio.run(_run())
+
+    assert feed.symbol == "btc/usd"
+    assert price == 43123.5
+
+    subscribe = orjson.loads(ws.sent_payloads[0])
+    for sub in subscribe["subscriptions"]:
+        assert json.loads(sub["filters"]) == {"symbol": "btc/usd"}
+
 
 def test_rtds_divergence_only_when_spot_is_fresh(monkeypatch: pytest.MonkeyPatch) -> None:
     fresh_ws = _FakeWebSocket(

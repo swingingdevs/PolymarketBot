@@ -11,6 +11,7 @@ import structlog
 import websockets
 
 from utils.price_validation import compare_feeds
+from utils.symbols import normalize_symbol
 
 logger = structlog.get_logger(__name__)
 
@@ -32,7 +33,7 @@ class RTDSFeed:
         log_price_comparison: bool = True,
     ) -> None:
         self.ws_url = ws_url
-        self.symbol = symbol
+        self.symbol = normalize_symbol(symbol)
         self.topic = topic
         self.spot_topic = spot_topic
         self.spot_max_age_seconds = spot_max_age_seconds
@@ -44,7 +45,7 @@ class RTDSFeed:
         self.price_staleness_threshold = price_staleness_threshold
         self.log_price_comparison = log_price_comparison
 
-        normalized_symbol = self.symbol.lower()
+        normalized_symbol = self.symbol
         encoded_filters = orjson.dumps({"symbol": normalized_symbol}).decode("utf-8")
         self._subscription_bytes_by_symbol: dict[str, bytes] = {
             normalized_symbol: orjson.dumps(
@@ -117,7 +118,7 @@ class RTDSFeed:
     async def stream_prices(self) -> AsyncIterator[tuple[float, float, dict[str, object]]]:
         """Yield (timestamp, price, metadata) from Chainlink RTDS feed."""
         logger.info("rtds_startup_feed", topic=self.topic, symbol=self.symbol)
-        normalized_symbol = self.symbol.lower()
+        normalized_symbol = self.symbol
 
         backoff = self.reconnect_delay_min
 
@@ -157,11 +158,10 @@ class RTDSFeed:
 
                             data = orjson.loads(message)
                             payload = data.get("payload", {})
-                            symbol_raw = self._find_first_nested_value(payload, ("symbol",))
-                            if symbol_raw is None:
-                                self._log_dropped_message(reason_code="missing_symbol", data=data)
+                            try:
+                                payload_symbol = normalize_symbol(str(payload.get("symbol", "")))
+                            except ValueError:
                                 continue
-                            payload_symbol = str(symbol_raw).lower()
                             if payload_symbol != normalized_symbol:
                                 self._log_dropped_message(reason_code="missing_symbol", data=data)
                                 continue

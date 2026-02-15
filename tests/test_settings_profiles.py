@@ -112,3 +112,13 @@ def test_min_trade_interval_seconds_defaults_to_zero() -> None:
 def test_min_trade_interval_seconds_must_be_non_negative() -> None:
     with pytest.raises(ValueError):
         Settings(min_trade_interval_seconds=-1)
+
+
+def test_symbol_is_normalized_at_settings_load() -> None:
+    settings = Settings(symbol="BTC-USD")
+    assert settings.symbol == "btc/usd"
+
+
+def test_invalid_symbol_is_rejected() -> None:
+    with pytest.raises(ValueError, match="invalid symbol"):
+        Settings(symbol="BTC")

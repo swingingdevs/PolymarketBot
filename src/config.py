@@ -6,6 +6,8 @@ from typing import Literal
 from pydantic import AliasChoices, Field, HttpUrl, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from utils.symbols import normalize_symbol
+
 
 PROFILE_DEFAULTS: dict[str, dict[str, float | int]] = {
     "paper": {
@@ -268,6 +270,8 @@ class Settings(BaseSettings):
 
             profile_default = defaults[field_name]
             setattr(self, field_name, type(baseline_default)(profile_default))
+
+        self.symbol = normalize_symbol(self.symbol)
 
         if self.max_entry_price > 0.99:
             raise ValueError("Unsafe configuration: max_entry_price must be <= 0.99")

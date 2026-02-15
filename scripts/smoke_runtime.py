@@ -76,7 +76,14 @@ def seed_strategy_prices(strategy: StrategyStateMachine, base_price: float, now_
 
 
 async def main() -> None:
+    rtds_liveness_deadline_seconds = 20
     settings = Settings(settings_profile="paper", dry_run=True)
+    print(
+        "[SMOKE] RTDS_CONFIG",
+        f"RTDS_WS_URL={settings.rtds_ws_url}",
+        f"RTDS_TOPIC={settings.rtds_topic}",
+        f"SYMBOL={settings.symbol}",
+    )
     gamma = GammaCache(str(settings.gamma_api_url))
     try:
         markets = await resolve_markets(gamma)
@@ -163,10 +170,39 @@ async def main() -> None:
         tasks = [asyncio.create_task(consume_rtds()), asyncio.create_task(consume_clob())]
         started = time.time()
         next_snapshot_at = started + 10
+        rtds_deadline_at = started + rtds_liveness_deadline_seconds
+
+        def print_rtds_timeout_diagnostic() -> None:
+            normalized_symbol = settings.symbol.lower()
+            subscription_payload = rtds._subscription_bytes_by_symbol.get(normalized_symbol)
+            subscription_text = (
+                subscription_payload.decode("utf-8", errors="replace") if subscription_payload is not None else "None"
+            )
+            print(
+                "[SMOKE] RTDS_TIMEOUT",
+                f"deadline_s={rtds_liveness_deadline_seconds}",
+                f"elapsed_s={time.time() - started:.1f}",
+                f"ws_url={settings.rtds_ws_url}",
+                f"symbol={settings.symbol}",
+                f"topic={settings.rtds_topic}",
+                f"spot_topic={rtds.spot_topic}",
+                f"subscription={subscription_text}",
+                f"rtds_events={smoke.rtds_events}",
+                f"clob_events={smoke.clob_events}",
+                f"snapshots={smoke.snapshots_printed}",
+                f"candidate_found={smoke.candidate_found}",
+                f"order_attempted={smoke.order_attempted}",
+                f"last_price_ts={rtds._last_price_ts}",
+                f"latest_topics={len(rtds._latest_by_topic_symbol)}",
+            )
 
         try:
             while (time.time() - started) < 120:
                 await asyncio.sleep(1)
+
+                if smoke.rtds_events == 0 and time.time() >= rtds_deadline_at:
+                    print_rtds_timeout_diagnostic()
+                    raise SystemExit(1)
 
                 if time.time() >= next_snapshot_at:
                     next_snapshot_at += 10
