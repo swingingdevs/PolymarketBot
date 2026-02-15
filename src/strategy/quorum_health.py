@@ -57,11 +57,18 @@ class QuorumHealth:
 
         if self.chainlink_sample is None:
             reasons.append("CHAINLINK_MISSING")
-            return QuorumDecision(False, reasons, True, None, lag_seconds, False)
+            return QuorumDecision(
+                trading_allowed=False,
+                reason_codes=reasons,
+                divergence_pct=None,
+                feed_lag_seconds=lag_seconds,
+                divergence_data_available=False,
+            )
 
         chainlink_lag = max(0.0, current - self.chainlink_sample.payload_ts)
         lag_seconds["chainlink"] = chainlink_lag
-        if chainlink_lag > self.chainlink_max_lag_seconds:
+        chainlink_stale = chainlink_lag > self.chainlink_max_lag_seconds
+        if chainlink_stale:
             reasons.append("CHAINLINK_STALE")
 
         fresh_spot_prices: list[float] = []
@@ -75,7 +82,13 @@ class QuorumHealth:
         if len(fresh_spot_prices) < self.min_spot_sources:
             reasons.append("SPOT_QUORUM_UNAVAILABLE")
             reasons.append("DIVERGENCE_DATA_MISSING")
-            return QuorumDecision(False, reasons, chainlink_stale, None, lag_seconds, False)
+            return QuorumDecision(
+                trading_allowed=False,
+                reason_codes=reasons,
+                divergence_pct=None,
+                feed_lag_seconds=lag_seconds,
+                divergence_data_available=False,
+            )
 
         spot_median = float(median(fresh_spot_prices))
         divergence_pct = abs((self.chainlink_sample.price - spot_median) / self.chainlink_sample.price) * 100.0
@@ -99,4 +112,10 @@ class QuorumHealth:
             reasons.append("SPOT_DIVERGENCE_SUSTAINED")
 
         trading_allowed = len(reasons) == 0
-        return QuorumDecision(trading_allowed, reasons, chainlink_stale, divergence_pct, lag_seconds, True)
+        return QuorumDecision(
+            trading_allowed=trading_allowed,
+            reason_codes=reasons,
+            divergence_pct=divergence_pct,
+            feed_lag_seconds=lag_seconds,
+            divergence_data_available=True,
+        )
