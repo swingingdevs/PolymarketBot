@@ -3,14 +3,30 @@ import pytest
 from config import Settings
 
 
-def test_default_profile_is_applied() -> None:
+def _clear_profile_tunable_env_vars(monkeypatch: pytest.MonkeyPatch) -> None:
+    tunable_env_vars = [
+        "WATCH_RETURN_THRESHOLD",
+        "HAMMER_SECS",
+        "D_MIN",
+        "MAX_ENTRY_PRICE",
+        "FEE_BPS",
+    ]
+
+    for env_var in tunable_env_vars:
+        monkeypatch.delenv(env_var, raising=False)
+        monkeypatch.delenv(env_var.lower(), raising=False)
+
+
+def test_default_profile_is_applied(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_profile_tunable_env_vars(monkeypatch)
     settings = Settings()
     assert settings.settings_profile == "paper"
     assert settings.watch_return_threshold == 0.004
     assert settings.hammer_secs == 20
 
 
-def test_profile_defaults_are_applied() -> None:
+def test_profile_defaults_are_applied(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_profile_tunable_env_vars(monkeypatch)
     settings = Settings(settings_profile="live")
     assert settings.watch_return_threshold == 0.006
     assert settings.hammer_secs == 12
@@ -26,6 +42,7 @@ def test_explicit_field_overrides_are_not_replaced_by_profile_defaults() -> None
 
 
 def test_profile_can_be_parsed_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_profile_tunable_env_vars(monkeypatch)
     monkeypatch.setenv("SETTINGS_PROFILE", "low_vol")
     settings = Settings()
     assert settings.settings_profile == "low_vol"
