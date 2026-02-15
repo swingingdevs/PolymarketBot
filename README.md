@@ -140,6 +140,22 @@ Startup is rejected for unsafe parameter combos, including:
 - Keep `DRY_RUN=true` until all connectivity and pricing checks are validated.
 - For live orders, set credentials and ensure py-clob-client account setup is complete.
 
+## Geoblock startup modes
+
+Startup geoblock behavior is enforced in `src/main.py::run_startup_geoblock_preflight`.
+
+- `GEOBLOCK_ABORT=true` (default): hard-stop process startup when geoblocked.
+- `GEOBLOCK_ABORT=false`: allow startup in monitor-only mode with trading disabled.
+
+Example for paper testing from restricted regions:
+
+```env
+DRY_RUN=true
+GEOBLOCK_ABORT=false
+```
+
+This monitor-only startup mode does **not** permit live trading from blocked jurisdictions.
+
 ## RTDS outage runbook (fallback behavior)
 
 Expected behavior when RTDS degrades or disconnects:
