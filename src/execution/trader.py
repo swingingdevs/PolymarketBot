@@ -323,7 +323,15 @@ class Trader:
             return self._cached_equity_usd
 
         self._last_equity_refresh_ts = now
-        self._cached_equity_usd = max(0.0, float(getattr(self.settings, "equity_usd", 1000.0)) + self.risk.cumulative_realized_pnl)
+        if not self.settings.dry_run:
+            self._equity_refresh_failed = True
+            return self._cached_equity_usd
+
+        if self.settings.allow_dry_run_equity_fallback:
+            self._cached_equity_usd = max(
+                0.0,
+                float(getattr(self.settings, "equity_usd", 1000.0)) + self.risk.cumulative_realized_pnl,
+            )
         return self._cached_equity_usd
 
     def _publish_configured_risk_limits(self) -> None:
