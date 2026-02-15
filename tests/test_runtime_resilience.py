@@ -213,7 +213,13 @@ def test_buy_fok_uses_limit_order_api(monkeypatch: pytest.MonkeyPatch, tmp_path)
 
 def test_buy_fok_limit_order_requests_configured_tif_for_every_submit(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setattr(Settings, "settings_profile", "paper", raising=False)
-    settings = Settings(dry_run=False, risk_state_path=str(tmp_path / "risk_state.json"), quote_size_usd=10, enable_fee_rate=False)
+    settings = Settings(
+        dry_run=False,
+        risk_state_path=str(tmp_path / "risk_state.json"),
+        quote_size_usd=10,
+        order_time_in_force="GTC",
+        enable_fee_rate=False,
+    )
     trader = Trader(settings)
     trader.client = _CaptureClient()
     trader._live_auth_ready = True
