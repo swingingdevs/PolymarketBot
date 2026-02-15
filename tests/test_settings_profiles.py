@@ -19,7 +19,7 @@ def _clear_profile_tunable_env_vars(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_default_profile_is_applied(monkeypatch: pytest.MonkeyPatch) -> None:
     _clear_profile_tunable_env_vars(monkeypatch)
-    settings = Settings()
+    settings = Settings(_env_file=None)
     assert settings.settings_profile == "paper"
     assert settings.watch_return_threshold == 0.004
     assert settings.hammer_secs == 20
@@ -27,7 +27,7 @@ def test_default_profile_is_applied(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_profile_defaults_are_applied(monkeypatch: pytest.MonkeyPatch) -> None:
     _clear_profile_tunable_env_vars(monkeypatch)
-    settings = Settings(settings_profile="live")
+    settings = Settings(settings_profile="live", _env_file=None)
     assert settings.watch_return_threshold == 0.006
     assert settings.hammer_secs == 12
     assert settings.d_min == 6.0
@@ -44,7 +44,7 @@ def test_explicit_field_overrides_are_not_replaced_by_profile_defaults() -> None
 def test_profile_can_be_parsed_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     _clear_profile_tunable_env_vars(monkeypatch)
     monkeypatch.setenv("SETTINGS_PROFILE", "low_vol")
-    settings = Settings()
+    settings = Settings(_env_file=None)
     assert settings.settings_profile == "low_vol"
     assert settings.hammer_secs == 25
 
@@ -52,7 +52,7 @@ def test_profile_can_be_parsed_from_env(monkeypatch: pytest.MonkeyPatch) -> None
 def test_explicit_env_overrides_still_win(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SETTINGS_PROFILE", "high_vol")
     monkeypatch.setenv("FEE_BPS", "7.5")
-    settings = Settings()
+    settings = Settings(_env_file=None)
     assert settings.settings_profile == "high_vol"
     assert settings.fee_bps == 7.5
 
@@ -60,7 +60,7 @@ def test_explicit_env_overrides_still_win(monkeypatch: pytest.MonkeyPatch) -> No
 def test_explicit_env_override_matching_baseline_default_still_wins(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SETTINGS_PROFILE", "live")
     monkeypatch.setenv("HAMMER_SECS", "15")
-    settings = Settings()
+    settings = Settings(_env_file=None)
     assert settings.settings_profile == "live"
     assert settings.hammer_secs == 15
 
