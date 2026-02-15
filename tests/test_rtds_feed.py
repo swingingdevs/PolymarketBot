@@ -394,3 +394,81 @@ def test_rtds_reconnect_after_stability_window_resets_backoff(monkeypatch: pytes
     asyncio.run(_run())
 
     assert reconnect_delays == [1, 1]
+
+
+def test_rtds_extracts_alternate_nested_price_and_timestamp_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    ws = _FakeWebSocket(
+        [
+            json.dumps(
+                {
+                    "topic": "crypto_prices_chainlink",
+                    "payload": {
+                        "envelope": {
+                            "symbol": "btc/usd",
+                            "price": "43123.5",
+                            "ts": 1712345679901,
+                        }
+                    },
+                }
+            )
+        ]
+    )
+    monkeypatch.setattr("feeds.rtds.websockets.connect", _connect_factory(ws))
+
+    feed = RTDSFeed("wss://unused", symbol="btc/usd", log_price_comparison=False)
+
+    async def _run():
+        stream = feed.stream_prices()
+        item = await stream.__anext__()
+        await stream.aclose()
+        return item
+
+    ts, price, metadata = asyncio.run(_run())
+
+    assert ts == 1712345679.901
+    assert price == 43123.5
+    assert metadata["timestamp"] == 1712345679.901
+
+
+def test_rtds_logs_reason_codes_for_dropped_messages(monkeypatch: pytest.MonkeyPatch) -> None:
+    attempts = iter(
+        [
+            _FakeConnectCtx(
+                _FakeWebSocket(
+                    [
+                        json.dumps({"topic": "crypto_prices_chainlink", "payload": {"value": "100", "timestamp": 1}}),
+                        json.dumps({"topic": "crypto_prices_chainlink", "payload": {"symbol": "btc/usd", "timestamp": 1}}),
+                        json.dumps({"topic": "crypto_prices_chainlink", "payload": {"symbol": "btc/usd", "value": "100"}}),
+                        json.dumps({"topic": "unexpected_topic", "payload": {"symbol": "btc/usd", "value": "100", "timestamp": 1}}),
+                    ]
+                )
+            ),
+            _FailingConnectCtx(),
+        ]
+    )
+
+    def _connect(*_args, **_kwargs):
+        return next(attempts)
+
+    warnings: list[dict[str, object]] = []
+
+    async def _fake_sleep(_delay: float) -> None:
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr("feeds.rtds.websockets.connect", _connect)
+    monkeypatch.setattr("feeds.rtds.asyncio.sleep", _fake_sleep)
+    monkeypatch.setattr("feeds.rtds.logger.warning", lambda event, **kwargs: warnings.append({"event": event, **kwargs}))
+
+    feed = RTDSFeed("wss://unused", symbol="btc/usd", log_price_comparison=False)
+
+    async def _run() -> None:
+        stream = feed.stream_prices()
+        with pytest.raises(RuntimeError, match="stop"):
+            await stream.__anext__()
+
+    asyncio.run(_run())
+
+    dropped = [w for w in warnings if w.get("event") == "rtds_message_dropped"]
+    reason_codes = [item["reason_code"] for item in dropped]
+    assert reason_codes == ["missing_symbol", "missing_price", "missing_timestamp", "topic_mismatch"]
+    assert all("sample_shape" in item for item in dropped)

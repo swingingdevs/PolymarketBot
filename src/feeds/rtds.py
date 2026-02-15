@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+from collections.abc import Mapping, Sequence
 from typing import AsyncIterator
 
 import orjson
@@ -60,6 +61,46 @@ class RTDSFeed:
 
         self._last_price_ts: float = 0.0
         self._latest_by_topic_symbol: dict[tuple[str, str], tuple[float, float]] = {}
+
+    @staticmethod
+    def _shape_redacted(value: object, *, _depth: int = 0) -> object:
+        if _depth >= 3:
+            return type(value).__name__
+        if isinstance(value, Mapping):
+            items = list(value.items())[:8]
+            return {str(key): RTDSFeed._shape_redacted(item, _depth=_depth + 1) for key, item in items}
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+            if not value:
+                return []
+            return [RTDSFeed._shape_redacted(value[0], _depth=_depth + 1)]
+        return type(value).__name__
+
+    def _log_dropped_message(self, *, reason_code: str, data: object) -> None:
+        logger.warning(
+            "rtds_message_dropped",
+            reason_code=reason_code,
+            sample_shape=self._shape_redacted(data),
+        )
+
+    @staticmethod
+    def _find_first_nested_value(candidate: object, keys: tuple[str, ...], *, _depth: int = 0) -> object | None:
+        if _depth > 4:
+            return None
+        if isinstance(candidate, Mapping):
+            for key in keys:
+                value = candidate.get(key)
+                if value is not None:
+                    return value
+            for value in candidate.values():
+                found = RTDSFeed._find_first_nested_value(value, keys, _depth=_depth + 1)
+                if found is not None:
+                    return found
+        elif isinstance(candidate, Sequence) and not isinstance(candidate, (str, bytes, bytearray)):
+            for item in candidate[:8]:
+                found = RTDSFeed._find_first_nested_value(item, keys, _depth=_depth + 1)
+                if found is not None:
+                    return found
+        return None
 
     async def _heartbeat(self, ws: websockets.WebSocketClientProtocol, failed_pings: list[int]) -> None:
         while True:
@@ -122,17 +163,35 @@ class RTDSFeed:
                             except ValueError:
                                 continue
                             if payload_symbol != normalized_symbol:
+                                self._log_dropped_message(reason_code="missing_symbol", data=data)
                                 continue
 
                             topic = str(data.get("topic") or self.topic)
-
-                            px = payload.get("value")
-                            ts_raw = payload.get("timestamp", data.get("timestamp"))
-                            if px is None or ts_raw is None:
+                            if topic not in {self.topic, self.spot_topic}:
+                                self._log_dropped_message(reason_code="topic_mismatch", data=data)
                                 continue
 
-                            price = float(px)
-                            ts_value = float(ts_raw)
+                            px = self._find_first_nested_value(payload, ("value", "price", "px"))
+                            ts_raw = self._find_first_nested_value(payload, ("timestamp", "ts", "time"))
+                            if ts_raw is None:
+                                ts_raw = data.get("timestamp")
+                            if px is None:
+                                self._log_dropped_message(reason_code="missing_price", data=data)
+                                continue
+                            if ts_raw is None:
+                                self._log_dropped_message(reason_code="missing_timestamp", data=data)
+                                continue
+
+                            try:
+                                price = float(px)
+                            except (TypeError, ValueError):
+                                self._log_dropped_message(reason_code="missing_price", data=data)
+                                continue
+                            try:
+                                ts_value = float(ts_raw)
+                            except (TypeError, ValueError):
+                                self._log_dropped_message(reason_code="missing_timestamp", data=data)
+                                continue
                             price_ts = ts_value / 1000.0 if ts_value > 1e12 else ts_value
                             self._last_price_ts = price_ts
                             self._latest_by_topic_symbol[(topic, payload_symbol)] = (price, price_ts)
