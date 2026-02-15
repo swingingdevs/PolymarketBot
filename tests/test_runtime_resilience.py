@@ -186,7 +186,7 @@ class _CaptureClient:
 
     def post_order(self, order, orderType="GTC"):
         self.posted_order = {"order": order, "orderType": orderType}
-        return {"fills": [{"price": order.get("price", 0.0) or 0.0, "size": order["size"]}]}
+        return self.response
 
 
 def test_buy_fok_uses_limit_order_api(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
