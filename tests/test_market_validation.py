@@ -1,11 +1,23 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
+import sys
 import time
+from pathlib import Path
 
 import pytest
 
 from markets.gamma_cache import GammaCache, UpDownMarket, build_slug
+
+_SMOKE_RUNTIME_SPEC = importlib.util.spec_from_file_location(
+    "smoke_runtime", Path(__file__).resolve().parents[1] / "scripts" / "smoke_runtime.py"
+)
+assert _SMOKE_RUNTIME_SPEC is not None and _SMOKE_RUNTIME_SPEC.loader is not None
+_smoke_runtime = importlib.util.module_from_spec(_SMOKE_RUNTIME_SPEC)
+sys.modules["smoke_runtime"] = _smoke_runtime
+_SMOKE_RUNTIME_SPEC.loader.exec_module(_smoke_runtime)
+resolve_markets = _smoke_runtime.resolve_markets
 
 
 def _valid_row(start_epoch: int, horizon_minutes: int) -> dict[str, object]:
@@ -116,3 +128,62 @@ def test_get_market_reuses_single_client_session(monkeypatch: pytest.MonkeyPatch
     assert len(created_sessions) == 1
     assert created_sessions[0].get_calls == 2
     assert created_sessions[0].closed is True
+
+
+def test_resolve_markets_falls_back_per_horizon(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = 1_710_000_123
+    start_5m_floor = now - (now % 300)
+    start_15m_floor = now - (now % 900)
+
+    market_5m = UpDownMarket(build_slug(5, start_5m_floor - 300), start_5m_floor - 300, start_5m_floor, "u5", "d5", 5)
+    market_15m = UpDownMarket(
+        build_slug(15, start_15m_floor + 900),
+        start_15m_floor + 900,
+        start_15m_floor + 1_800,
+        "u15",
+        "d15",
+        15,
+    )
+
+    class FakeGamma:
+        def __init__(self) -> None:
+            self.calls: list[tuple[int, int]] = []
+
+        async def get_market(self, horizon_minutes: int, start_epoch: int) -> UpDownMarket:
+            self.calls.append((horizon_minutes, start_epoch))
+            if horizon_minutes == 5 and start_epoch == start_5m_floor - 300:
+                return market_5m
+            if horizon_minutes == 15 and start_epoch == start_15m_floor + 900:
+                return market_15m
+            raise ValueError(f"no market for {horizon_minutes}m {start_epoch}")
+
+    monkeypatch.setattr("smoke_runtime.time.time", lambda: now)
+
+    gamma = FakeGamma()
+    markets = asyncio.run(resolve_markets(gamma))
+
+    assert markets == [market_5m, market_15m]
+    assert gamma.calls == [
+        (5, start_5m_floor),
+        (5, start_5m_floor - 300),
+        (15, start_15m_floor),
+        (15, start_15m_floor - 900),
+        (15, start_15m_floor + 900),
+    ]
+
+
+def test_resolve_markets_raises_single_error_after_all_candidates(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = 1_710_000_123
+    start_5m_floor = now - (now % 300)
+
+    class AlwaysFailGamma:
+        async def get_market(self, horizon_minutes: int, start_epoch: int) -> UpDownMarket:
+            raise RuntimeError(f"boom-{horizon_minutes}-{start_epoch}")
+
+    monkeypatch.setattr("smoke_runtime.time.time", lambda: now)
+
+    with pytest.raises(RuntimeError, match=r"Failed to resolve 5m market") as excinfo:
+        asyncio.run(resolve_markets(AlwaysFailGamma()))
+
+    assert f"attempted_epochs=[{start_5m_floor}, {start_5m_floor - 300}, {start_5m_floor + 300}]" in str(excinfo.value)
+    assert f"last_error=boom-5-{start_5m_floor + 300}" in str(excinfo.value)

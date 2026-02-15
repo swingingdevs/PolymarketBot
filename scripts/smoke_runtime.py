@@ -35,13 +35,35 @@ def floor_to_boundary(ts: int, seconds: int) -> int:
     return ts - (ts % seconds)
 
 
+def candidate_start_epochs(now: int, seconds: int) -> list[int]:
+    current = floor_to_boundary(now, seconds)
+    return [current, current - seconds, current + seconds]
+
+
+async def resolve_market_with_fallback(gamma: GammaCache, horizon_minutes: int, now: int) -> UpDownMarket:
+    interval_seconds = horizon_minutes * 60
+    candidates = candidate_start_epochs(now, interval_seconds)
+    last_exc: Exception | None = None
+
+    for candidate_start in candidates:
+        try:
+            return await gamma.get_market(horizon_minutes, candidate_start)
+        except Exception as exc:  # best-effort fallback across boundary candidates
+            last_exc = exc
+
+    assert last_exc is not None
+    candidate_text = ", ".join(str(candidate) for candidate in candidates)
+    raise RuntimeError(
+        f"Failed to resolve {horizon_minutes}m market. attempted_epochs=[{candidate_text}] "
+        f"last_error={last_exc}"
+    )
+
+
 async def resolve_markets(gamma: GammaCache) -> list[UpDownMarket]:
     now = int(time.time())
-    start_5m = floor_to_boundary(now, 300)
-    start_15m = floor_to_boundary(now, 900)
     market_5m, market_15m = await asyncio.gather(
-        gamma.get_market(5, start_5m),
-        gamma.get_market(15, start_15m),
+        resolve_market_with_fallback(gamma, 5, now),
+        resolve_market_with_fallback(gamma, 15, now),
     )
     return [market_5m, market_15m]
 
