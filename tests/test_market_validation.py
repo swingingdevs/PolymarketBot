@@ -175,6 +175,142 @@ def test_get_market_allows_start_time_drift_when_slug_matches(monkeypatch: pytes
     assert market.end_epoch == start + 300
 
 
+def test_get_market_accepts_list_payloads_for_outcomes_and_clob_ids(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = int(time.time())
+    start = ((now // 300) + 3) * 300
+    row = _valid_row(start, 5)
+
+    class FakeResponse:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def raise_for_status(self) -> None:
+            return
+
+        async def json(self) -> list[dict[str, object]]:
+            return [row]
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def get(self, _url: str, *, params: dict[str, str], timeout: int):
+            del params, timeout
+            return FakeResponse()
+
+        async def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr("markets.gamma_cache.aiohttp.ClientSession", FakeSession)
+
+    async def _run() -> UpDownMarket:
+        cache = GammaCache("https://gamma-api.polymarket.com")
+        try:
+            return await cache.get_market(5, start)
+        finally:
+            await cache.close()
+
+    market = asyncio.run(_run())
+    assert market.up_token_id == "u"
+    assert market.down_token_id == "d"
+
+
+def test_get_market_accepts_json_string_payloads_for_outcomes_and_clob_ids(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = int(time.time())
+    start = ((now // 300) + 3) * 300
+    row = _valid_row(start, 5)
+    row["outcomes"] = '["Up", "Down"]'
+    row["clobTokenIds"] = '["u", "d"]'
+
+    class FakeResponse:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def raise_for_status(self) -> None:
+            return
+
+        async def json(self) -> list[dict[str, object]]:
+            return [row]
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def get(self, _url: str, *, params: dict[str, str], timeout: int):
+            del params, timeout
+            return FakeResponse()
+
+        async def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr("markets.gamma_cache.aiohttp.ClientSession", FakeSession)
+
+    async def _run() -> UpDownMarket:
+        cache = GammaCache("https://gamma-api.polymarket.com")
+        try:
+            return await cache.get_market(5, start)
+        finally:
+            await cache.close()
+
+    market = asyncio.run(_run())
+    assert market.up_token_id == "u"
+    assert market.down_token_id == "d"
+
+
+def test_get_market_raises_deterministic_error_for_malformed_outcomes_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = int(time.time())
+    start = ((now // 300) + 3) * 300
+    row = _valid_row(start, 5)
+    row["outcomes"] = "[not-json"
+
+    class FakeResponse:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def raise_for_status(self) -> None:
+            return
+
+        async def json(self) -> list[dict[str, object]]:
+            return [row]
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def get(self, _url: str, *, params: dict[str, str], timeout: int):
+            del params, timeout
+            return FakeResponse()
+
+        async def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr("markets.gamma_cache.aiohttp.ClientSession", FakeSession)
+
+    async def _run() -> None:
+        cache = GammaCache("https://gamma-api.polymarket.com")
+        try:
+            await cache.get_market(5, start)
+        finally:
+            await cache.close()
+
+    with pytest.raises(ValueError) as excinfo:
+        asyncio.run(_run())
+
+    assert (
+        str(excinfo.value)
+        == "Invalid outcomes: failed to parse JSON list from type=str value='[not-json'"
+    )
+
+
 def test_resolve_markets_falls_back_per_horizon(monkeypatch: pytest.MonkeyPatch) -> None:
     now = 1_710_000_123
     start_5m_floor = now - (now % 300)
