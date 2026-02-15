@@ -175,10 +175,14 @@ def test_market_epoch_roll_triggers_clob_resubscribe() -> None:
 
 
 class _CaptureClient:
-    def __init__(self, response: dict[str, object] | None = None) -> None:
+    def __init__(self, response: dict[str, object] | None = None, equity_usd: float = 1000.0) -> None:
         self.limit_order_args: dict[str, object] | None = None
         self.posted_order: dict[str, object] | None = None
         self.response = response or {"fills": [{"price": 0.0, "size": 1.0}]}
+        self.equity_usd = equity_usd
+
+    def get_balance(self):
+        return {"balance": self.equity_usd}
 
     def create_order(self, order_args):
         self.limit_order_args = dict(order_args.__dict__)
