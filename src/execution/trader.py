@@ -885,6 +885,8 @@ class Trader:
         return None
 
     def _submit_live_fok_order(self, token_id: str, px: float, size: float) -> Any:
+        time_in_force, post_only = self._resolve_order_submission_controls()
+
         if self.client is None:
             raise RuntimeError("missing_clob_client")
 
@@ -902,7 +904,7 @@ class Trader:
             if used_fallback and bool(getattr(self.settings, "enable_fee_rate", True)):
                 raise RuntimeError("fee_rate_unavailable_monitor_only")
             logger.info("order_fee_rate", token_id=token_id, fee_rate_bps=fee_rate_bps)
-            return self.client.post_order(limit_order, orderType="FOK")
+            return self.client.post_order(limit_order, orderType=time_in_force)
 
         raise RuntimeError("unsupported_order_submission_api")
 
