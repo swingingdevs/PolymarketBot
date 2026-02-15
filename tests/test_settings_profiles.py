@@ -85,3 +85,13 @@ def test_fee_rate_ttl_seconds_can_be_configured_from_env(monkeypatch: pytest.Mon
     monkeypatch.setenv("FEE_RATE_TTL_SECONDS", "120")
     settings = Settings()
     assert settings.fee_rate_ttl_seconds == 120.0
+
+
+def test_min_trade_interval_seconds_defaults_to_zero() -> None:
+    settings = Settings()
+    assert settings.min_trade_interval_seconds == 0
+
+
+def test_min_trade_interval_seconds_must_be_non_negative() -> None:
+    with pytest.raises(ValueError):
+        Settings(min_trade_interval_seconds=-1)
