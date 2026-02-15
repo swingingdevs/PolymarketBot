@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import time
 from dataclasses import dataclass, field
@@ -213,6 +214,39 @@ class GammaCache:
 
         return TokenMetadata(tick_size=tick_size, min_order_size=min_order_size, fee_rate_bps=fee_rate_bps)
 
+    @staticmethod
+    def _normalize_string_list_field(field_name: str, value: object) -> list[str]:
+        def value_preview(raw: object) -> str:
+            preview = repr(raw)
+            if len(preview) > 120:
+                preview = f"{preview[:117]}..."
+            return preview
+
+        if isinstance(value, list):
+            return [str(item) for item in value]
+
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"Invalid {field_name}: failed to parse JSON list from "
+                    f"type={type(value).__name__} value={value_preview(value)}"
+                ) from exc
+
+            if isinstance(parsed, list):
+                return [str(item) for item in parsed]
+
+            raise ValueError(
+                f"Invalid {field_name}: expected JSON list but got "
+                f"type={type(parsed).__name__} value={value_preview(parsed)}"
+            )
+
+        raise ValueError(
+            f"Invalid {field_name}: expected list or JSON list string but got "
+            f"type={type(value).__name__} value={value_preview(value)}"
+        )
+
     async def get_market(self, horizon_minutes: int, start_epoch: int) -> UpDownMarket:
         slug = build_slug(horizon_minutes, start_epoch)
         now = int(time.time())
@@ -259,9 +293,9 @@ class GammaCache:
                 observed_end_epoch=observed_end_epoch,
             )
 
-        outcomes = row.get("outcomes", [])
-        clob_ids = row.get("clobTokenIds", [])
-        mapping = {str(outcomes[i]).lower(): str(clob_ids[i]) for i in range(min(len(outcomes), len(clob_ids)))}
+        outcomes = self._normalize_string_list_field("outcomes", row.get("outcomes", []))
+        clob_ids = self._normalize_string_list_field("clobTokenIds", row.get("clobTokenIds", []))
+        mapping = {outcomes[i].lower(): clob_ids[i] for i in range(min(len(outcomes), len(clob_ids)))}
         up = mapping.get("up")
         down = mapping.get("down")
         if not up or not down:
