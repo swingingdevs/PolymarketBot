@@ -906,6 +906,83 @@ class Trader:
 
         raise RuntimeError("unsupported_order_submission_api")
 
+    async def submit_fok_batch(self, legs: list[BatchOrderLeg], *, atomic: bool = True) -> BatchSubmitResult:
+        max_size = int(getattr(self.settings, "batch_order_max_size", 1))
+        if len(legs) > max_size:
+            raise ValueError("batch_order_max_size_exceeded")
+
+        if self.client is None:
+            raise RuntimeError("missing_clob_client")
+
+        if not self._live_auth_ready:
+            raise RuntimeError("missing_clob_l2_credentials")
+
+        orders = [
+            self.client.create_limit_order(
+                token_id=leg.token_id,
+                price=leg.price,
+                size=leg.size,
+                side=leg.side,
+            )
+            for leg in legs
+        ]
+
+        can_use_batch_endpoint = bool(getattr(self.settings, "batch_orders_enabled", True)) and hasattr(self.client, "post_orders")
+        if can_use_batch_endpoint:
+            responses = await asyncio.wait_for(
+                asyncio.to_thread(self.client.post_orders, orders, atomic=atomic, time_in_force="FOK"),
+                timeout=self.settings.order_submit_timeout_seconds,
+            )
+            if not isinstance(responses, list):
+                responses = [responses]
+
+            results: list[BatchOrderResult] = []
+            for idx, leg in enumerate(legs):
+                response = responses[idx] if idx < len(responses) else None
+                ok = bool(response)
+                results.append(
+                    BatchOrderResult(
+                        index=idx,
+                        token_id=leg.token_id,
+                        ok=ok,
+                        response=response,
+                        error=None if ok else "batch_order_rejected",
+                    )
+                )
+            return BatchSubmitResult(
+                ok=all(result.ok for result in results),
+                atomic=atomic,
+                used_batch_endpoint=True,
+                results=results,
+            )
+
+        if not hasattr(self.client, "post_order"):
+            raise RuntimeError("unsupported_order_submission_api")
+
+        results: list[BatchOrderResult] = []
+        for idx, (leg, order) in enumerate(zip(legs, orders, strict=False)):
+            response: Any = None
+            error: str | None = None
+            try:
+                response = await asyncio.wait_for(
+                    asyncio.to_thread(self.client.post_order, order, time_in_force="FOK"),
+                    timeout=self.settings.order_submit_timeout_seconds,
+                )
+                ok = bool(response)
+                if not ok:
+                    error = "order_rejected"
+            except Exception as exc:
+                ok = False
+                error = str(exc)
+            results.append(BatchOrderResult(index=idx, token_id=leg.token_id, ok=ok, response=response, error=error))
+
+        return BatchSubmitResult(
+            ok=all(result.ok for result in results),
+            atomic=atomic,
+            used_batch_endpoint=False,
+            results=results,
+        )
+
     def send_heartbeat(self) -> bool:
         if self.settings.dry_run:
             return True

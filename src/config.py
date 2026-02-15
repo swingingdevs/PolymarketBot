@@ -180,6 +180,8 @@ class Settings(BaseSettings):
     api_passphrase: str = Field(default="", repr=False)
 
     quote_size_usd: float = 20.0
+    batch_orders_enabled: bool = True
+    batch_order_max_size: int = 10
     order_submit_timeout_seconds: float = 5.0
     order_post_only: bool = False
     order_fok: bool = True
@@ -249,6 +251,8 @@ class Settings(BaseSettings):
             raise ValueError("Unsafe configuration: rtds_recovery_min_fresh_updates must be > 0")
         if self.min_trade_interval_seconds < 0:
             raise ValueError("Unsafe configuration: min_trade_interval_seconds must be >= 0")
+        if self.batch_order_max_size <= 0:
+            raise ValueError("Unsafe configuration: batch_order_max_size must be > 0")
 
         return self
 
