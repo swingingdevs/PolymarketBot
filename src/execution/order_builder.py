@@ -103,10 +103,21 @@ class OrderBuilder:
             "token_id": token_id,
             "fee_rate_bps": int(round(fee_rate_bps)),
         }
-        del time_in_force
+        payload = {
+            **base_payload,
+            "time_in_force": normalized_tif,
+            "timeInForce": normalized_tif,
+            "post_only": bool(post_only),
+            "postOnly": bool(post_only),
+        }
 
         if hasattr(self.clob_client, "create_order"):
-            order = self.clob_client.create_order(OrderArgs(**payload))
+            order_args = OrderArgs(**base_payload)
+            order_args.time_in_force = payload["time_in_force"]
+            order_args.timeInForce = payload["timeInForce"]
+            order_args.post_only = payload["post_only"]
+            order_args.postOnly = payload["postOnly"]
+            order = self.clob_client.create_order(order_args)
         else:
             raise RuntimeError("unsupported_order_submission_api")
 
